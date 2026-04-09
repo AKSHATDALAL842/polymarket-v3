@@ -1,0 +1,25 @@
+# Core
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+
+# Async HTTP + WebSocket
+httpx>=0.27.0
+aiohttp>=3.9.0
+websockets>=12.0
+
+# News sources
+feedparser>=6.0.0
+tweepy>=4.14.0
+
+# Semantic matching (local embeddings — fast, no API key needed)
+sentence-transformers>=2.7.0
+numpy>=1.26.0
+
+# Terminal UI
+rich>=13.0.0
+
+# Optional: OpenAI embeddings backend (set EMBEDDING_BACKEND=openai in .env)
+# openai>=1.30.0
+
+# Optional: live Polymarket CLOB execution
+# py-clob-client>=0.18.0   # requires Python >=3.9.10
