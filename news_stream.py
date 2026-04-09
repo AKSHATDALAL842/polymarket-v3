@@ -110,6 +110,18 @@ class TwitterStream:
                         params={"tweet.fields": "created_at,author_id,text"},
                         timeout=None,
                     ) as resp:
+                        if resp.status_code == 429:
+                            log.warning(
+                                "[twitter] 429 Too Many Requests — filtered stream requires "
+                                "Twitter API Basic tier ($100/mo). Falling back to RSS only."
+                            )
+                            return
+                        if resp.status_code == 403:
+                            log.warning(
+                                "[twitter] 403 Forbidden — account does not have stream access. "
+                                "Falling back to RSS only."
+                            )
+                            return
                         backoff = 1
                         async for line in resp.aiter_lines():
                             if not line.strip():
