@@ -40,6 +40,12 @@ for _noisy in ["httpx", "httpcore", "openai._base_client", "urllib3",
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
+# Load HF_TOKEN from .env so HuggingFace doesn't warn about unauthenticated requests
+from dotenv import load_dotenv
+load_dotenv()
+if os.getenv("HF_TOKEN"):
+    os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
+
 
 def cmd_watch(args):
     """V2: Event-driven pipeline — real-time news → classify → trade."""
