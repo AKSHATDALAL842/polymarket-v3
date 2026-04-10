@@ -42,11 +42,24 @@ TELEGRAM_CHANNEL_IDS = [
 # ── NewsAPI / RSS fallback ─────────────────────────────────────────────────────
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 RSS_FEEDS = [
+    # AI / Tech
     "https://news.google.com/rss/search?q=AI+artificial+intelligence&hl=en-US&gl=US&ceid=US:en",
     "https://feeds.feedburner.com/TechCrunch",
     "https://feeds.arstechnica.com/arstechnica/technology-lab",
     "https://www.theverge.com/rss/index.xml",
     "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+    # Crypto
+    "https://cointelegraph.com/rss",
+    "https://coindesk.com/arc/outboundfeeds/rss/",
+    "https://news.google.com/rss/search?q=bitcoin+crypto&hl=en-US&gl=US&ceid=US:en",
+    # Politics / Markets
+    "https://feeds.reuters.com/reuters/topNews",
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://news.google.com/rss/search?q=Federal+Reserve+rate&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Trump+tariff+election&hl=en-US&gl=US&ceid=US:en",
+    # OpenAI / Anthropic specific
+    "https://news.google.com/rss/search?q=OpenAI+GPT&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=SpaceX+Starship&hl=en-US&gl=US&ceid=US:en",
 ]
 
 # ── Market Filters ─────────────────────────────────────────────────────────────
@@ -80,10 +93,10 @@ MATCHER_MIN_SIMILARITY = 0.30        # cosine similarity floor
 EDGE_ALPHA = 0.40          # weight on materiality in price adjustment
 EDGE_BETA = 0.30           # weight on confidence
 EDGE_GAMMA = 0.30          # weight on novelty
-EDGE_THRESHOLD = float(os.getenv("EDGE_THRESHOLD", "0.06"))   # min |EV| to trade
-MATERIALITY_THRESHOLD = float(os.getenv("MATERIALITY_THRESHOLD", "0.55"))
-MIN_CONFIDENCE = 0.60       # min LLM confidence to proceed
-MIN_NOVELTY = 0.40          # skip if likely already priced in
+EDGE_THRESHOLD = float(os.getenv("EDGE_THRESHOLD", "0.03"))   # min |EV| to trade
+MATERIALITY_THRESHOLD = float(os.getenv("MATERIALITY_THRESHOLD", "0.30"))
+MIN_CONFIDENCE = 0.55       # min LLM confidence to proceed
+MIN_NOVELTY = 0.20          # skip if likely already priced in
 
 # ── Position Sizing (V3 — capped fractional) ───────────────────────────────────
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"

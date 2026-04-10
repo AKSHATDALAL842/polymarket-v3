@@ -277,7 +277,7 @@ class NewsAggregator:
 
         self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, config.TWITTER_KEYWORDS)
         self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
-        self.rss = RSSFallback(interval_seconds=120)
+        self.rss = RSSFallback(interval_seconds=60)
 
         self.stats = {"twitter": 0, "telegram": 0, "rss": 0, "total": 0, "deduped": 0}
 
