@@ -33,8 +33,11 @@ _embed_fn: EmbedFn | None = None
 
 def _load_sentence_transformers() -> EmbedFn:
     try:
+        import os
+        # Use HF token if available — suppresses unauthenticated warning
+        hf_token = os.getenv("HF_TOKEN") or config.ANTHROPIC_API_KEY and None
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")    # 22MB, 384-dim, ~10ms/sentence
+        model = SentenceTransformer("all-MiniLM-L6-v2", token=hf_token or None)
         log.info("[matcher] Loaded sentence-transformers (all-MiniLM-L6-v2)")
 
         def embed(texts: list[str]) -> np.ndarray:
