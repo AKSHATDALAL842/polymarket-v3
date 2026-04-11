@@ -39,6 +39,9 @@ TELEGRAM_CHANNEL_IDS = [
     c.strip() for c in os.getenv("TELEGRAM_CHANNEL_IDS", "").split(",") if c.strip()
 ]
 
+# ── GNews (gnews.io) ──────────────────────────────────────────────────────────
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "")
+
 # ── NewsAPI / RSS fallback ─────────────────────────────────────────────────────
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 RSS_FEEDS = [
@@ -124,6 +127,11 @@ LIMIT_ORDER_OFFSET = 0.01   # place limit ORDER_OFFSET inside spread
 MIN_ORDERBOOK_DEPTH_USD = 200        # skip if < $200 on best 3 levels
 MOMENTUM_WINDOW_SECONDS = 60         # lookback for momentum calc
 MOMENTUM_THRESHOLD = 0.05            # skip if |price move| > 5% in window (already moving)
+
+# ── NLP Intelligence Layer ────────────────────────────────────────────────────
+NLP_ENABLED = os.getenv("NLP_ENABLED", "true").lower() == "true"
+NLP_MIN_IMPACT = float(os.getenv("NLP_MIN_IMPACT", "0.10"))   # drop events below this impact score
+NLP_DECAY_LAMBDA = 0.05    # temporal decay constant (per minute)
 
 # ── Performance Targets ────────────────────────────────────────────────────────
 SPEED_TARGET_SECONDS = float(os.getenv("SPEED_TARGET_SECONDS", "5"))

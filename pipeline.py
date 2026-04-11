@@ -28,6 +28,8 @@ from edge_model import compute_edge
 from executor import execute_trade_async
 from risk import RiskManager
 from metrics import get_tracker
+import nlp_processor
+import broadcaster
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +112,27 @@ class Pipeline:
         headline = event.headline
         source = event.source
         news_latency_ms = getattr(event, "receive_latency_ms", 0)
+
+        # Step 0: NLP enrichment — NER, sentiment, impact score, temporal decay
+        if config.NLP_ENABLED:
+            age_seconds = event.age_seconds()
+            nlp = nlp_processor.process(
+                headline=headline,
+                source=source,
+                age_seconds=age_seconds,
+                novelty_score=0.5,   # will be refined by classifier pass
+            )
+            if nlp.relevance < config.NLP_MIN_IMPACT:
+                log.debug(
+                    f"[pipeline] NLP gate: relevance={nlp.relevance:.3f} < {config.NLP_MIN_IMPACT} "
+                    f"— skipping '{headline[:50]}'"
+                )
+                return
+            log.debug(
+                f"[pipeline] NLP: cat={nlp.category} sent={nlp.sentiment_polarity:+.2f} "
+                f"impact={nlp.impact_score:.2f} relevance={nlp.relevance:.2f} "
+                f"entities={[e.text for e in nlp.entities[:3]]}"
+            )
 
         # Step 1: Find candidate markets (semantic search)
         markets = self.watcher.tracked_markets
@@ -237,6 +260,23 @@ class Pipeline:
             f"'{market.question[:45]}' ev={signal.ev:.3f} "
             f"latency={result.latency_ms}ms"
         )
+
+        # Broadcast to WebSocket subscribers
+        broadcaster.broadcast({
+            "type": "signal",
+            "side": signal.side,
+            "market": market.question,
+            "market_id": market.condition_id,
+            "p_market": round(signal.p_market, 4),
+            "p_true": round(signal.p_true, 4),
+            "ev": round(signal.ev, 4),
+            "bet_usd": result.filled_size,
+            "status": result.status,
+            "source": signal.news_source,
+            "headline": signal.headlines[:120],
+            "latency_ms": result.latency_ms,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
     # ── Status ─────────────────────────────────────────────────────────────────
 
