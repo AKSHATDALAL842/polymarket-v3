@@ -313,4 +313,4 @@ def execute_trade(signal: Signal) -> ExecutionResult:
 
 async def execute_trade_async(signal: Signal) -> ExecutionResult:
     """Async wrapper — runs blocking CLOB calls in a thread pool."""
-    return await asyncio.get_event_loop().run_in_executor(None, execute_trade, signal)
+    return await asyncio.get_running_loop().run_in_executor(None, execute_trade, signal)

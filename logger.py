@@ -8,9 +8,10 @@ DB_PATH = Path(__file__).parent / "trades.db"
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -82,6 +83,11 @@ def init_db():
             resolved_at TEXT,
             UNIQUE(trade_id)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
+        CREATE INDEX IF NOT EXISTS idx_trades_market_id ON trades(market_id);
+        CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+        CREATE INDEX IF NOT EXISTS idx_calibration_correct ON calibration(correct);
     """)
     # Add V2 columns to existing trades table if missing
     _migrate_v2_columns(conn)
@@ -215,23 +221,47 @@ def log_run_end(run_id: int, markets_scanned: int, signals_found: int, trades_pl
 
 
 def get_daily_pnl() -> float:
+    """
+    Returns net P&L for today.
+    Uses outcomes table when available; falls back to -amount_usd (capital at risk)
+    for trades without resolved outcomes.
+    """
     conn = _conn()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     row = conn.execute(
-        """SELECT COALESCE(SUM(
-               CASE WHEN status IN ('filled','executed') THEN -amount_usd ELSE 0 END
-           ), 0) as spent
-           FROM trades WHERE created_at LIKE ?""",
+        """SELECT
+               COALESCE(SUM(o.pnl), 0) as resolved_pnl,
+               COALESCE(SUM(CASE WHEN o.pnl IS NULL AND t.status IN ('executed','dry_run')
+                                 THEN -t.amount_usd ELSE 0 END), 0) as open_exposure
+           FROM trades t
+           LEFT JOIN outcomes o ON o.trade_id = t.id
+           WHERE t.created_at LIKE ?""",
         (f"{today}%",),
     ).fetchone()
     conn.close()
-    return row["spent"]
+    return (row["resolved_pnl"] or 0.0) + (row["open_exposure"] or 0.0)
 
 
 def get_recent_trades(limit: int = 20) -> list[dict]:
     conn = _conn()
     rows = conn.execute(
         "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_recent_calibrated_trades(limit: int = 500) -> list[dict]:
+    """Return trades that have calibration records with resolved outcomes."""
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT t.*, c.correct, c.exit_price, c.actual_direction
+           FROM trades t
+           JOIN calibration c ON c.trade_id = t.id
+           WHERE c.correct IS NOT NULL
+           ORDER BY t.created_at DESC
+           LIMIT ?""",
+        (limit,),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

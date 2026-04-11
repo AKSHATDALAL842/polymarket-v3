@@ -44,20 +44,26 @@ class RiskManager:
         self._cooldown_until: float = 0.0                # monotonic time
         self._daily_pnl_cache: float = 0.0
         self._daily_pnl_last_check: float = 0.0
+        self._state_lock = Lock()
 
     # ── Checks ─────────────────────────────────────────────────────────────────
 
+    _DAILY_PNL_CACHE_TTL = 30.0  # re-query logger at most every 30s
+
     def can_trade_daily(self) -> bool:
-        """Check daily loss cap by querying logger."""
-        try:
-            import logger as lg
-            pnl = lg.get_daily_pnl()
-            loss = min(0.0, pnl)                          # only count losses
-            if abs(loss) >= config.DAILY_LOSS_LIMIT_USD:
-                log.warning(f"[risk] Daily loss cap hit: ${abs(loss):.2f}")
-                return False
-        except Exception:
-            pass
+        """Check daily loss cap. Caches result for 30s to avoid DB thrashing."""
+        now = time.monotonic()
+        if now - self._daily_pnl_last_check > self._DAILY_PNL_CACHE_TTL:
+            try:
+                import logger as lg
+                self._daily_pnl_cache = lg.get_daily_pnl()
+                self._daily_pnl_last_check = now
+            except Exception:
+                pass
+        loss = min(0.0, self._daily_pnl_cache)
+        if abs(loss) >= config.DAILY_LOSS_LIMIT_USD:
+            log.warning(f"[risk] Daily loss cap hit: ${abs(loss):.2f}")
+            return False
         return True
 
     def can_open_position(self) -> bool:
@@ -87,30 +93,32 @@ class RiskManager:
     # ── State updates ───────────────────────────────────────────────────────────
 
     def on_trade_opened(self, condition_id: str, category: str, amount_usd: float):
-        self._open_positions[condition_id] = amount_usd
-        self._category_exposure[category] = self._category_exposure.get(category, 0.0) + amount_usd
+        with self._state_lock:
+            self._open_positions[condition_id] = amount_usd
+            self._category_exposure[category] = self._category_exposure.get(category, 0.0) + amount_usd
         log.debug(
             f"[risk] Position opened: {condition_id[:12]} ${amount_usd:.2f} "
             f"category={category} open={len(self._open_positions)}"
         )
 
     def on_trade_closed(self, condition_id: str, category: str, pnl: float):
-        amount = self._open_positions.pop(condition_id, 0.0)
-        self._category_exposure[category] = max(
-            0.0, self._category_exposure.get(category, 0.0) - amount
-        )
+        with self._state_lock:
+            amount = self._open_positions.pop(condition_id, 0.0)
+            self._category_exposure[category] = max(
+                0.0, self._category_exposure.get(category, 0.0) - amount
+            )
 
-        if pnl < 0:
-            self._consecutive_losses += 1
-            if self._consecutive_losses >= config.CONSECUTIVE_LOSS_COOLDOWN:
-                cooldown_secs = config.COOLDOWN_MINUTES * 60
-                self._cooldown_until = time.monotonic() + cooldown_secs
-                log.warning(
-                    f"[risk] {self._consecutive_losses} consecutive losses — "
-                    f"entering {config.COOLDOWN_MINUTES}min cooldown"
-                )
-        else:
-            self._consecutive_losses = 0
+            if pnl < 0:
+                self._consecutive_losses += 1
+                if self._consecutive_losses >= config.CONSECUTIVE_LOSS_COOLDOWN:
+                    cooldown_secs = config.COOLDOWN_MINUTES * 60
+                    self._cooldown_until = time.monotonic() + cooldown_secs
+                    log.warning(
+                        f"[risk] {self._consecutive_losses} consecutive losses — "
+                        f"entering {config.COOLDOWN_MINUTES}min cooldown"
+                    )
+            else:
+                self._consecutive_losses = 0
 
     # ── Status ──────────────────────────────────────────────────────────────────
 

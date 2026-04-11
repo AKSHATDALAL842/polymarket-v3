@@ -168,6 +168,7 @@ class MarketWatcher:
         self.tracked_markets: list[Market] = []
         self._refresh_interval = 300
         self._ws_connected = False
+        self._ws = None   # live websocket handle, used to subscribe new markets
         self._http = httpx.AsyncClient(timeout=10)
         self.stats = {
             "ws_messages": 0,
@@ -179,15 +180,62 @@ class MarketWatcher:
     # ── Market list ────────────────────────────────────────────────────────────
 
     def get_niche_markets(self, markets: list[Market]) -> list[Market]:
-        return [
+        eligible = [
             m for m in markets
             if config.MIN_VOLUME_USD <= m.volume <= config.MAX_VOLUME_USD
             and m.active
         ]
 
+        if not config.PREFER_SHORT_DURATION_DAYS:
+            return eligible
+
+        # Sort: markets resolving within PREFER_SHORT_DURATION_DAYS come first,
+        # then remaining markets sorted by end_date ascending (soonest first).
+        now = datetime.now(timezone.utc)
+        cutoff_days = config.PREFER_SHORT_DURATION_DAYS
+
+        def _days_to_expiry(m: Market) -> float:
+            """Return days until market resolution, or inf if unparseable."""
+            ed = m.end_date
+            if not ed:
+                return float("inf")
+            try:
+                # Handle ISO strings with or without timezone
+                if ed.endswith("Z"):
+                    ed = ed[:-1] + "+00:00"
+                dt = datetime.fromisoformat(ed)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                delta = (dt - now).total_seconds() / 86400.0
+                return max(0.0, delta)
+            except (ValueError, TypeError):
+                return float("inf")
+
+        short = []
+        long_ = []
+        for m in eligible:
+            days = _days_to_expiry(m)
+            if days <= cutoff_days:
+                short.append((days, m))
+            else:
+                long_.append((days, m))
+
+        short.sort(key=lambda x: x[0])
+        long_.sort(key=lambda x: x[0])
+
+        sorted_markets = [m for _, m in short] + [m for _, m in long_]
+
+        if short:
+            log.info(
+                f"[watcher] {len(short)} short-duration markets (≤{cutoff_days}d) "
+                f"prioritized out of {len(eligible)} total"
+            )
+
+        return sorted_markets
+
     async def refresh_markets(self):
         try:
-            all_markets = await asyncio.get_event_loop().run_in_executor(
+            all_markets = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: fetch_active_markets(limit=200)
             )
             categorized = filter_by_categories(all_markets)
@@ -197,6 +245,7 @@ class MarketWatcher:
             existing_ids = set(self.snapshots)
             new_ids = {m.condition_id for m in self.tracked_markets}
 
+            newly_added: list[Market] = []
             for m in self.tracked_markets:
                 if m.condition_id not in self.snapshots:
                     self.snapshots[m.condition_id] = MarketSnapshot(
@@ -205,12 +254,28 @@ class MarketWatcher:
                         prev_price=m.yes_price,
                         last_update=now,
                     )
+                    newly_added.append(m)
                 else:
                     snap = self.snapshots[m.condition_id]
                     snap.market = m
 
             for stale_id in existing_ids - new_ids:
                 del self.snapshots[stale_id]
+
+            # Subscribe new markets to live WebSocket if connected
+            if newly_added and self._ws_connected and self._ws is not None:
+                for m in newly_added:
+                    for token in m.tokens:
+                        tid = token.get("token_id")
+                        if tid:
+                            try:
+                                await self._ws.send(json.dumps({
+                                    "type": "subscribe",
+                                    "channel": "price",
+                                    "market": tid,
+                                }))
+                            except Exception as e:
+                                log.debug(f"[watcher] WS re-subscribe failed for {tid}: {e}")
 
             self.stats["market_refreshes"] += 1
             log.info(f"[watcher] Tracking {len(self.tracked_markets)} niche markets")
@@ -279,6 +344,7 @@ class MarketWatcher:
                     ssl=ssl_ctx,
                 ) as ws:
                     self._ws_connected = True
+                    self._ws = ws
                     log.info("[watcher] WebSocket connected")
 
                     for market in self.tracked_markets:
@@ -300,6 +366,7 @@ class MarketWatcher:
 
             except Exception as e:
                 self._ws_connected = False
+                self._ws = None
                 log.warning(f"[watcher] WS error: {e}  — reconnecting in 5s")
                 await asyncio.sleep(5)
 

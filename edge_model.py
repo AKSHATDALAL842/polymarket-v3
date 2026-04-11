@@ -99,6 +99,10 @@ def _adjustment(
     # Uses 1 - exp(-2*raw) which saturates at ~1 for large inputs
     scaled = room * (1.0 - math.exp(-2.0 * raw))
 
+    # Hard cap: never move price more than EDGE_MAX_ADJUSTMENT from market
+    # This prevents the LLM's overconfident scores from producing unrealistic EVs
+    scaled = min(scaled, config.EDGE_MAX_ADJUSTMENT)
+
     return sign * scaled
 
 
@@ -161,9 +165,8 @@ def compute_edge(
         return None
 
     # Microstructure gate: skip if market is too thin
-    min_liquidity = 0.2
-    if liquidity_score < min_liquidity:
-        log.debug(f"[edge] Rejected: liquidity_score={liquidity_score:.2f} < {min_liquidity}")
+    if liquidity_score < config.MIN_LIQUIDITY_SCORE:
+        log.debug(f"[edge] Rejected: liquidity_score={liquidity_score:.2f} < {config.MIN_LIQUIDITY_SCORE}")
         return None
 
     # Spread guard: if spread is very wide, the true cost exceeds any edge

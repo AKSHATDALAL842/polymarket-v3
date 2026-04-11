@@ -55,6 +55,8 @@ class Pipeline:
         self._event_count = 0
         self._signal_count = 0
         self._start_time: Optional[float] = None
+        # Per-market cooldown: condition_id → monotonic time of last signal
+        self._last_signal_time: dict[str, float] = {}
 
     # ── Main entry point ───────────────────────────────────────────────────────
 
@@ -75,17 +77,23 @@ class Pipeline:
         self._news_aggregator = NewsStream(self._news_queue)
 
         # Run watcher + news aggregator + event consumer concurrently
-        await asyncio.gather(
+        results = await asyncio.gather(
             self.watcher.run(),
             self._news_aggregator.run(),
             self._consume_news_queue(),
             return_exceptions=True,
         )
+        for r in results:
+            if isinstance(r, Exception):
+                log.error(f"[pipeline] Top-level task failed: {r}")
 
     async def _consume_news_queue(self):
         """Drain the news queue and dispatch each event as a concurrent task."""
         while True:
             event: NewsEvent = await self._news_queue.get()
+            qsize = self._news_queue.qsize()
+            if qsize > 50:
+                log.warning(f"[pipeline] Queue depth={qsize} — events may lag behind news ingestion")
             asyncio.create_task(
                 self._handle_event(event),
                 name=f"event-{event.source}-{self._event_count}",
@@ -160,7 +168,10 @@ class Pipeline:
             )
             for match in matches
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                log.error(f"[pipeline] Market processing error: {r}")
 
         elapsed = int((time.monotonic() - t0) * 1000)
         log.debug(f"[pipeline] Event processed in {elapsed}ms")
@@ -174,6 +185,12 @@ class Pipeline:
         t0: float,
     ):
         """Process one (event, market) pair: classify → edge → microstructure → execute."""
+
+        # Per-market cooldown: skip if we already signalled this market recently
+        last = self._last_signal_time.get(market.condition_id, 0.0)
+        if time.monotonic() - last < config.MARKET_SIGNAL_COOLDOWN_SECONDS:
+            log.debug(f"[pipeline] Market cooldown active, skipping: {market.question[:50]}")
+            return
 
         # Step 2a: Classification (3-pass LLM voting)
         cls_start = time.monotonic()
@@ -211,7 +228,6 @@ class Pipeline:
             return
 
         # Step 2c: Edge calculation
-        from edge_model import compute_edge
         signal = compute_edge(
             market=market,
             classification=classification,
@@ -222,6 +238,9 @@ class Pipeline:
 
         if signal is None:
             return
+
+        # Record signal time for cooldown
+        self._last_signal_time[market.condition_id] = time.monotonic()
 
         # Attach latency accounting
         total_elapsed_ms = int((time.monotonic() - t0) * 1000)

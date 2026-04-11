@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
-
-import anthropic
+import logging
 
 import config
 from scraper import NewsItem
 from markets import Market
 
+log = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+def _make_client():
+    if config.USE_GROQ:
+        from openai import OpenAI
+        return OpenAI(api_key=config.GROQ_API_KEY, base_url=config.GROQ_BASE_URL), "groq"
+    import anthropic
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY), "anthropic"
+
+
+client, _backend = _make_client()
 
 SCORING_PROMPT = """You are a prediction market analyst. Your job is to estimate the probability that a specific market question will resolve YES, based on recent news headlines.
 
@@ -58,13 +67,22 @@ def score_market(market: Market, news: list[NewsItem]) -> dict:
     )
 
     try:
-        response = client.messages.create(
-            model=config.CLAUDE_MODEL,
-            max_tokens=500,
-            temperature=0.2,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
+        if _backend == "groq":
+            response = client.chat.completions.create(
+                model=config.SCORING_MODEL,
+                max_tokens=500,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.choices[0].message.content.strip()
+        else:
+            response = client.messages.create(
+                model=config.SCORING_MODEL,
+                max_tokens=500,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text.strip()
 
         # Extract JSON from response (handle markdown code blocks)
         if "```" in text:

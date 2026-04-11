@@ -6,6 +6,7 @@ Emits NewsEvent objects into an asyncio queue as breaking news arrives.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import logging
 from datetime import datetime, timezone, timedelta
@@ -127,7 +128,6 @@ class TwitterStream:
                             if not line.strip():
                                 continue
                             try:
-                                import json
                                 data = json.loads(line)
                                 tweet = data.get("data", {})
                                 text = tweet.get("text", "")
@@ -591,8 +591,7 @@ class GDELTSource:
                     # GDELT seendate format: YYYYMMDDTHHMMSSZ
                     seendate = article.get("seendate", "")
                     try:
-                        from datetime import datetime as _dt
-                        pub = _dt.strptime(seendate, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                        pub = datetime.strptime(seendate, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
                     except Exception:
                         pub = now
                     latency = int((now - pub).total_seconds() * 1000)
