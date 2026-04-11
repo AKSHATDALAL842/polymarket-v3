@@ -39,6 +39,22 @@ TELEGRAM_CHANNEL_IDS = [
     c.strip() for c in os.getenv("TELEGRAM_CHANNEL_IDS", "").split(",") if c.strip()
 ]
 
+# ── Kalshi ────────────────────────────────────────────────────────────────────
+# Auth option A — email + password (simpler, token auto-refreshed every hour)
+KALSHI_EMAIL    = os.getenv("KALSHI_EMAIL", "")
+KALSHI_PASSWORD = os.getenv("KALSHI_PASSWORD", "")
+# Auth option B — RSA API key (more secure; generate in Kalshi dashboard)
+KALSHI_API_KEY_ID       = os.getenv("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+# Use demo environment until ready for live trading
+KALSHI_DEMO = os.getenv("KALSHI_DEMO", "true").lower() == "true"
+KALSHI_HOST = (
+    "https://demo-api.kalshi.co/trade-api/v2"
+    if os.getenv("KALSHI_DEMO", "true").lower() == "true"
+    else "https://trading-api.kalshi.com/trade-api/v2"
+)
+KALSHI_ENABLED = bool(KALSHI_EMAIL or KALSHI_API_KEY_ID)
+
 # ── GNews (gnews.io) ──────────────────────────────────────────────────────────
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "")
 

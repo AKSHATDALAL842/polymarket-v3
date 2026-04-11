@@ -121,10 +121,18 @@ async def markets():
             "no_price": m.no_price,
             "volume": m.volume,
             "end_date": m.end_date,
+            "source": getattr(m, "source", "polymarket"),
         }
         for m in pipeline.watcher.tracked_markets
     ]
-    return {"count": len(mkt_list), "markets": mkt_list}
+    poly_count   = sum(1 for m in mkt_list if m["source"] == "polymarket")
+    kalshi_count = sum(1 for m in mkt_list if m["source"] == "kalshi")
+    return {
+        "count": len(mkt_list),
+        "polymarket": poly_count,
+        "kalshi": kalshi_count,
+        "markets": mkt_list,
+    }
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
