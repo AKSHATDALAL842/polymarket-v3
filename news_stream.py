@@ -325,15 +325,9 @@ class NewsAPISource:
 class RedditSource:
     """
     Reddit JSON API — no key required.
-    Polls /new on subreddits relevant to prediction markets.
-    Reddit often breaks news before mainstream outlets.
+    Uses AdaptiveSubredditSelector for alpha-weighted, performance-adaptive sampling.
+    Filters posts with is_high_signal() before emitting to pipeline.
     """
-
-    SUBREDDITS = [
-        "Bitcoin", "CryptoCurrency", "ethereum",
-        "politics", "worldnews", "economy",
-        "artificial", "OpenAI", "stocks",
-    ]
 
     def __init__(self, interval_seconds: float = 45):
         self.interval = interval_seconds
@@ -341,20 +335,21 @@ class RedditSource:
         self._headers = {
             "User-Agent": "polymarket-pipeline/3.0 (news aggregator)"
         }
+        from reddit_source import AdaptiveSubredditSelector, is_high_signal
+        self._selector = AdaptiveSubredditSelector()
+        self._is_high_signal = is_high_signal
 
     async def stream(self, queue: asyncio.Queue):
-        log.info("[reddit] Starting — polling /new on 9 subreddits every 45s")
-        sub_cycle = 0
+        log.info("[reddit] Starting — adaptive weighted subreddit sampling")
 
         while True:
             try:
-                sub = self.SUBREDDITS[sub_cycle % len(self.SUBREDDITS)]
-                sub_cycle += 1
+                sub = self._selector.get_next()
 
                 async with httpx.AsyncClient(headers=self._headers) as client:
                     resp = await client.get(
                         f"https://www.reddit.com/r/{sub}/new.json",
-                        params={"limit": 15},
+                        params={"limit": 25},
                         timeout=10,
                     )
                     if resp.status_code != 200:
@@ -364,12 +359,15 @@ class RedditSource:
                     posts = resp.json().get("data", {}).get("children", [])
                     now = datetime.now(timezone.utc)
                     new_count = 0
+                    filtered_count = 0
 
                     for post in posts:
                         data = post.get("data", {})
                         title = data.get("title", "").strip()
                         if not title:
                             continue
+
+                        self._selector.record_post_seen(sub)
 
                         key = title.lower()[:80]
                         if key in self._seen:
@@ -384,6 +382,11 @@ class RedditSource:
                         if latency > 1200000:
                             continue
 
+                        # Filter: only pass high-signal posts
+                        if not self._is_high_signal(title):
+                            filtered_count += 1
+                            continue
+
                         new_count += 1
                         event = NewsEvent(
                             headline=title,
@@ -393,17 +396,231 @@ class RedditSource:
                             published_at=pub,
                             summary=data.get("selftext", "")[:200],
                             latency_ms=latency,
+                            raw_data={"subreddit": sub},
                         )
                         await queue.put(event)
 
                     if new_count:
-                        log.info(f"[reddit] {new_count} new posts (r/{sub})")
+                        log.info(f"[reddit] {new_count} signals (r/{sub}, filtered={filtered_count})")
 
                     if len(self._seen) > 5000:
                         self._seen = set(list(self._seen)[-2000:])
 
             except Exception as e:
                 log.warning(f"[reddit] Error: {e}")
+
+            await asyncio.sleep(self.interval)
+
+
+class GNewsSource:
+    """
+    GNews API (gnews.io) — structured news with clean metadata.
+    Free tier: 100 requests/day → poll every 15 min, 6 topic groups.
+    Each request returns up to 10 articles.
+    """
+
+    BASE_URL = "https://gnews.io/api/v4"
+    TOPICS = [
+        ("breaking", "top-headlines"),
+        ("technology", "top-headlines"),
+        ("business", "top-headlines"),
+        ("world", "top-headlines"),
+        ("politics", "search"),
+        ("crypto OR bitcoin OR ethereum", "search"),
+    ]
+
+    def __init__(self, api_key: str, interval_seconds: float = 900):
+        self.api_key = api_key
+        self.interval = interval_seconds
+        self.enabled = bool(api_key)
+        self._seen: set[str] = set()
+        self._topic_cycle = 0
+
+    async def stream(self, queue: asyncio.Queue):
+        if not self.enabled:
+            log.info("[gnews] No API key — disabled")
+            return
+
+        log.info("[gnews] Starting — polling every 15 min (100 req/day free tier)")
+
+        while True:
+            try:
+                topic, endpoint = self.TOPICS[self._topic_cycle % len(self.TOPICS)]
+                self._topic_cycle += 1
+
+                params = {
+                    "token": self.api_key,
+                    "lang": "en",
+                    "max": 10,
+                    "sortby": "publishedAt",
+                }
+                if endpoint == "top-headlines":
+                    params["topic"] = topic
+                    url = f"{self.BASE_URL}/top-headlines"
+                else:
+                    params["q"] = topic
+                    url = f"{self.BASE_URL}/search"
+
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, params=params, timeout=10)
+
+                if resp.status_code == 403:
+                    log.warning("[gnews] 403 — invalid API key")
+                    return
+                if resp.status_code == 429:
+                    log.warning("[gnews] Daily limit hit — sleeping 1h")
+                    await asyncio.sleep(3600)
+                    continue
+                if resp.status_code != 200:
+                    await asyncio.sleep(self.interval)
+                    continue
+
+                articles = resp.json().get("articles", [])
+                now = datetime.now(timezone.utc)
+                new_count = 0
+
+                for article in articles:
+                    headline = article.get("title", "").strip()
+                    if not headline:
+                        continue
+
+                    key = headline.lower()[:80]
+                    if key in self._seen:
+                        continue
+                    self._seen.add(key)
+
+                    pub_str = article.get("publishedAt", "")
+                    try:
+                        pub = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                    except Exception:
+                        pub = now
+                    latency = int((now - pub).total_seconds() * 1000)
+
+                    if latency > 3600000:   # skip if >1h old
+                        continue
+
+                    new_count += 1
+                    event = NewsEvent(
+                        headline=headline,
+                        source="gnews",
+                        url=article.get("url", ""),
+                        received_at=now,
+                        published_at=pub,
+                        summary=article.get("description", "")[:300],
+                        latency_ms=latency,
+                        raw_data={"topic": topic, "source_name": article.get("source", {}).get("name", "")},
+                    )
+                    await queue.put(event)
+
+                if new_count:
+                    log.info(f"[gnews] {new_count} new articles (topic={topic})")
+
+                if len(self._seen) > 5000:
+                    self._seen = set(list(self._seen)[-2000:])
+
+            except Exception as e:
+                log.warning(f"[gnews] Error: {e}")
+
+            await asyncio.sleep(self.interval)
+
+
+class GDELTSource:
+    """
+    GDELT Project DOC 2.0 API — structured global event data.
+    Free, no key required. Rich geopolitical + macro coverage.
+    Polls multiple queries every 5 minutes.
+    """
+
+    BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+    QUERIES = [
+        "Federal Reserve interest rate",
+        "election results president",
+        "sanctions war military",
+        "OpenAI Google Microsoft AI",
+        "Bitcoin Ethereum cryptocurrency SEC",
+        "SpaceX NASA launch",
+        "trade tariff import export",
+        "central bank monetary policy",
+    ]
+
+    def __init__(self, interval_seconds: float = 300):
+        self.interval = interval_seconds
+        self._seen: set[str] = set()
+        self._query_cycle = 0
+
+    async def stream(self, queue: asyncio.Queue):
+        log.info("[gdelt] Starting — polling 8 queries every 5 min (free, no key)")
+
+        while True:
+            try:
+                query = self.QUERIES[self._query_cycle % len(self.QUERIES)]
+                self._query_cycle += 1
+
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        self.BASE_URL,
+                        params={
+                            "query": query,
+                            "mode": "artlist",
+                            "maxrecords": 25,
+                            "sort": "DateDesc",
+                            "format": "json",
+                        },
+                        timeout=15,
+                    )
+
+                if resp.status_code != 200:
+                    await asyncio.sleep(self.interval)
+                    continue
+
+                data = resp.json()
+                articles = data.get("articles", [])
+                now = datetime.now(timezone.utc)
+                new_count = 0
+
+                for article in articles:
+                    headline = article.get("title", "").strip()
+                    if not headline:
+                        continue
+
+                    key = headline.lower()[:80]
+                    if key in self._seen:
+                        continue
+                    self._seen.add(key)
+
+                    # GDELT seendate format: YYYYMMDDTHHMMSSZ
+                    seendate = article.get("seendate", "")
+                    try:
+                        from datetime import datetime as _dt
+                        pub = _dt.strptime(seendate, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                    except Exception:
+                        pub = now
+                    latency = int((now - pub).total_seconds() * 1000)
+
+                    if latency > 1800000:   # skip if >30 min old
+                        continue
+
+                    new_count += 1
+                    event = NewsEvent(
+                        headline=headline,
+                        source="gdelt",
+                        url=article.get("url", ""),
+                        received_at=now,
+                        published_at=pub,
+                        summary=article.get("socialimage", ""),
+                        latency_ms=latency,
+                        raw_data={"query": query, "domain": article.get("domain", "")},
+                    )
+                    await queue.put(event)
+
+                if new_count:
+                    log.info(f"[gdelt] {new_count} new articles (query: {query[:40]})")
+
+                if len(self._seen) > 5000:
+                    self._seen = set(list(self._seen)[-2000:])
+
+            except Exception as e:
+                log.warning(f"[gdelt] Error: {e}")
 
             await asyncio.sleep(self.interval)
 
@@ -471,10 +688,13 @@ class NewsAggregator:
         self.rss = RSSFallback(interval_seconds=60)
         self.newsapi = NewsAPISource(config.NEWSAPI_KEY, interval_seconds=30)
         self.reddit = RedditSource(interval_seconds=45)
+        self.gnews = GNewsSource(config.GNEWS_API_KEY, interval_seconds=900)
+        self.gdelt = GDELTSource(interval_seconds=300)
 
         self.stats = {
             "twitter": 0, "telegram": 0, "rss": 0,
-            "newsapi": 0, "reddit": 0, "total": 0, "deduped": 0,
+            "newsapi": 0, "reddit": 0, "gnews": 0, "gdelt": 0,
+            "total": 0, "deduped": 0,
         }
 
     async def run(self):
@@ -485,6 +705,8 @@ class NewsAggregator:
             self.rss.stream(self._internal_queue),
             self.newsapi.stream(self._internal_queue),
             self.reddit.stream(self._internal_queue),
+            self.gnews.stream(self._internal_queue),
+            self.gdelt.stream(self._internal_queue),
             self._dedup_router(),
             return_exceptions=True,
         )
