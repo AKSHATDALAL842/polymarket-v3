@@ -23,6 +23,7 @@ class Market:
     end_date: str
     active: bool
     tokens: list[dict]
+    source: str = "polymarket"   # "polymarket" | "kalshi"
 
     @property
     def implied_probability(self) -> float:

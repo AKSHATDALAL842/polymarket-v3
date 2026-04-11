@@ -56,7 +56,16 @@ export default function MarketTable({ markets }) {
                       {m.question}
                     </td>
                     <td>
-                      <span className={`cat-badge cat-${cat}`}>{cat}</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span className={`cat-badge cat-${cat}`}>{cat}</span>
+                        <span style={{
+                          fontFamily: '"Barlow Condensed"', fontSize: '8.5px', fontWeight: 700,
+                          letterSpacing: '0.1em', textTransform: 'uppercase',
+                          color: m.source === 'kalshi' ? 'var(--green)' : 'var(--txt-mute)',
+                        }}>
+                          {m.source === 'kalshi' ? 'KALSHI' : 'POLY'}
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <span className="txt-green">{(m.yes_price * 100).toFixed(0)}¢</span>

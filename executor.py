@@ -285,7 +285,7 @@ def _log_trade(
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def execute_trade(signal: Signal) -> ExecutionResult:
-    """Synchronous entry point. Checks risk gates, then routes to dry/live."""
+    """Synchronous entry point. Checks risk gates, then routes by market source."""
     exec_start = time.monotonic()
 
     rejection = _check_risk_gates(signal)
@@ -304,6 +304,11 @@ def execute_trade(signal: Signal) -> ExecutionResult:
             slippage=0.0,
             latency_ms=latency,
         )
+
+    # Route by market source
+    if getattr(signal.market, "source", "polymarket") == "kalshi":
+        from kalshi_executor import execute_kalshi
+        return execute_kalshi(signal)
 
     if config.DRY_RUN:
         return _dry_run_execution(signal, exec_start)

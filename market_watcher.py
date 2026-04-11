@@ -235,9 +235,23 @@ class MarketWatcher:
 
     async def refresh_markets(self):
         try:
+            # Fetch Polymarket markets
             all_markets = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: fetch_active_markets(limit=200)
             )
+
+            # Merge Kalshi markets if enabled
+            if config.KALSHI_ENABLED:
+                try:
+                    from kalshi_markets import fetch_kalshi_markets
+                    kalshi = await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: fetch_kalshi_markets(limit=200)
+                    )
+                    all_markets = all_markets + kalshi
+                    log.info(f"[watcher] Merged {len(kalshi)} Kalshi markets")
+                except Exception as e:
+                    log.warning(f"[watcher] Kalshi fetch skipped: {e}")
+
             categorized = filter_by_categories(all_markets)
             self.tracked_markets = self.get_niche_markets(categorized)
 
