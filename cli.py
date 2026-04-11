@@ -65,23 +65,9 @@ def cmd_watch(args):
 
 
 def cmd_run(args):
-    """V1: Synchronous pipeline — RSS → score → trade."""
-    import config
-    from pipeline import run_pipeline
-
-    if args.live:
-        config.DRY_RUN = False
-        console.print("[red bold]LIVE TRADING ENABLED[/red bold]\n")
-    else:
-        console.print("[yellow]Dry-run mode (use --live to trade for real)[/yellow]\n")
-
-    if args.threshold:
-        config.EDGE_THRESHOLD = args.threshold
-
-    run_pipeline(
-        max_markets=args.max,
-        lookback_hours=args.hours,
-    )
+    """V1: Synchronous pipeline — alias for the V2 event-driven pipeline."""
+    console.print("[yellow]Note: V1 synchronous pipeline removed. Launching V2 event-driven pipeline.[/yellow]\n")
+    cmd_watch(args)
 
 
 def cmd_backtest(args):
@@ -104,19 +90,22 @@ def cmd_calibrate(args):
 
     console.print(Panel(f"[bold]CALIBRATION REPORT[/bold]", style="bright_cyan"))
     console.print(f"  Total resolved: {report.total}")
-    console.print(f"  Accuracy: {report.accuracy:.1f}%")
+    console.print(f"  Accuracy: {report.overall_accuracy:.1%}")
+    console.print(f"  Brier Score: {report.brier_score:.3f}  ECE: {report.ece:.3f}")
 
     if report.by_source:
         console.print(f"\n  [bold]By Source:[/bold]")
-        for source, acc in report.by_source.items():
-            color = "bright_green" if acc >= 55 else ("yellow" if acc >= 45 else "red")
-            console.print(f"    {source}: [{color}]{acc:.1f}%[/{color}]")
+        for source, d in report.by_source.items():
+            acc = d.get("accuracy", 0)
+            color = "bright_green" if acc >= 0.55 else ("yellow" if acc >= 0.45 else "red")
+            console.print(f"    {source}: [{color}]{acc:.1%}[/{color}] (n={d.get('n', 0)})")
 
-    if report.by_classification:
-        console.print(f"\n  [bold]By Classification:[/bold]")
-        for cls, acc in report.by_classification.items():
-            color = "bright_green" if acc >= 55 else ("yellow" if acc >= 45 else "red")
-            console.print(f"    {cls}: [{color}]{acc:.1f}%[/{color}]")
+    if report.by_category:
+        console.print(f"\n  [bold]By Category:[/bold]")
+        for cat, d in report.by_category.items():
+            acc = d.get("accuracy", 0)
+            color = "bright_green" if acc >= 0.55 else ("yellow" if acc >= 0.45 else "red")
+            console.print(f"    {cat}: [{color}]{acc:.1%}[/{color}] (n={d.get('n', 0)})")
 
     console.print(f"\n  [dim]{report.recommendation}[/dim]")
 

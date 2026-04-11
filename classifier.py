@@ -298,9 +298,17 @@ def classify(
     source: str = "unknown",
 ) -> Classification:
     """Synchronous wrapper for use in backtest / CLI contexts."""
-    return asyncio.get_event_loop().run_until_complete(
-        classify_async(headline, market, source)
-    )
+    try:
+        loop = asyncio.get_running_loop()
+        # Already inside a running loop — schedule on it
+        import concurrent.futures
+        future = asyncio.run_coroutine_threadsafe(
+            classify_async(headline, market, source), loop
+        )
+        return future.result(timeout=30)
+    except RuntimeError:
+        # No running loop — create a fresh one
+        return asyncio.run(classify_async(headline, market, source))
 
 
 # ── Self-test ──────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ NOT used for live decisions — purely for strategy validation.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -109,9 +110,8 @@ def fetch_resolved_markets(limit: int = 50, category: str | None = None) -> list
 
     for m in items:
         try:
-            import json as jsonmod
             outcome_prices = m.get("outcomePrices", "")
-            prices = jsonmod.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
+            prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
             if not prices or len(prices) < 2:
                 continue
 
@@ -400,7 +400,7 @@ async def run_backtest_async(
 
 def run_backtest(limit: int = 30, category: Optional[str] = None) -> BacktestReport:
     """Synchronous wrapper."""
-    return asyncio.get_event_loop().run_until_complete(run_backtest_async(limit, category))
+    return asyncio.run(run_backtest_async(limit, category))
 
 
 # ── Report printer ─────────────────────────────────────────────────────────────

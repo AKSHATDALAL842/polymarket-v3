@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 
 import httpx
 
 import config
 
+log = logging.getLogger(__name__)
 GAMMA_API = "https://gamma-api.polymarket.com"
 
 
@@ -45,7 +48,7 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"[markets] Gamma API error: {e}, falling back to CLOB...")
+        log.warning(f"[markets] Gamma API error: {e}, falling back to CLOB...")
         return _fetch_from_clob(limit)
 
     items = data if isinstance(data, list) else data.get("data", [])
@@ -58,7 +61,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
             no_price = 0.5
 
             if outcome_prices:
-                import json
                 try:
                     prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
                     if len(prices) >= 2:
@@ -70,7 +72,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
             # Also check tokens array
             tokens = m.get("tokens", m.get("clobTokenIds", []))
             if isinstance(tokens, str):
-                import json
                 try:
                     tokens = json.loads(tokens)
                 except json.JSONDecodeError:
@@ -79,7 +80,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
             # Build token list for order execution
             clob_token_ids = m.get("clobTokenIds", "")
             if isinstance(clob_token_ids, str):
-                import json
                 try:
                     clob_token_ids = json.loads(clob_token_ids)
                 except json.JSONDecodeError:
@@ -132,7 +132,7 @@ def _fetch_from_clob(limit: int) -> list[Market]:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"[markets] CLOB API error: {e}")
+        log.warning(f"[markets] CLOB API error: {e}")
         return markets
 
     items = data if isinstance(data, list) else data.get("data", data.get("markets", []))

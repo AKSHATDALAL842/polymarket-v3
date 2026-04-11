@@ -69,6 +69,8 @@ RSS_FEEDS = [
 MAX_VOLUME_USD = float(os.getenv("MAX_VOLUME_USD", "500000"))
 MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", "1000"))
 MARKET_CATEGORIES = ["ai", "technology", "crypto", "politics", "science"]
+# Prefer markets resolving within this many days — set 0 to disable
+PREFER_SHORT_DURATION_DAYS = int(os.getenv("PREFER_SHORT_DURATION_DAYS", "30"))
 NEWS_LOOKBACK_HOURS = 6
 TWITTER_KEYWORDS = [
     "OpenAI", "GPT-5", "Anthropic", "Claude", "Google AI", "Gemini",
@@ -97,9 +99,11 @@ EDGE_ALPHA = 0.40          # weight on materiality in price adjustment
 EDGE_BETA = 0.30           # weight on confidence
 EDGE_GAMMA = 0.30          # weight on novelty
 EDGE_THRESHOLD = float(os.getenv("EDGE_THRESHOLD", "0.03"))   # min |EV| to trade
+EDGE_MAX_ADJUSTMENT = float(os.getenv("EDGE_MAX_ADJUSTMENT", "0.12"))  # cap price adj at 12%
 MATERIALITY_THRESHOLD = float(os.getenv("MATERIALITY_THRESHOLD", "0.30"))
 MIN_CONFIDENCE = 0.55       # min LLM confidence to proceed
 MIN_NOVELTY = 0.20          # skip if likely already priced in
+MIN_LIQUIDITY_SCORE = 0.20  # skip if market is too thin (0=illiquid, 1=very liquid)
 
 # ── Position Sizing (V3 — capped fractional) ───────────────────────────────────
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
@@ -117,6 +121,7 @@ COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "30"))
 
 # ── Execution (V3) ─────────────────────────────────────────────────────────────
 ORDER_TYPE = os.getenv("ORDER_TYPE", "limit")      # "limit" or "market"
+MARKET_SIGNAL_COOLDOWN_SECONDS = int(os.getenv("MARKET_SIGNAL_COOLDOWN_SECONDS", "600"))  # 10 min between signals on same market
 MAX_SPREAD_FRACTION = 0.08                          # skip if spread > 8% of mid
 MAX_SLIPPAGE_FRACTION = 0.03                        # reject if estimated slippage > 3%
 ORDER_RETRY_ATTEMPTS = 3
