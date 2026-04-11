@@ -217,6 +217,197 @@ class TelegramMonitor:
                 await asyncio.sleep(5)
 
 
+class NewsAPISource:
+    """
+    NewsAPI.org polling — free tier gives 100 req/day.
+    Polls /v2/everything every 30s across all keyword groups.
+    Covers breaking news 2-3 minutes after publication.
+    """
+
+    BASE_URL = "https://newsapi.org/v2/everything"
+    QUERIES = [
+        "Bitcoin OR Ethereum OR crypto",
+        "OpenAI OR Anthropic OR GPT",
+        "Federal Reserve OR Fed rate OR inflation",
+        "Trump OR tariff OR election",
+        "SpaceX OR Starship OR NASA",
+        "NVIDIA OR Apple OR Microsoft earnings",
+    ]
+
+    def __init__(self, api_key: str, interval_seconds: float = 30):
+        self.api_key = api_key
+        self.interval = interval_seconds
+        self.enabled = bool(api_key)
+        self._seen: set[str] = set()
+
+    async def stream(self, queue: asyncio.Queue):
+        if not self.enabled:
+            log.info("[newsapi] No API key — disabled")
+            return
+
+        log.info("[newsapi] Starting — polling every 30s")
+        query_cycle = 0
+
+        while True:
+            try:
+                query = self.QUERIES[query_cycle % len(self.QUERIES)]
+                query_cycle += 1
+
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        self.BASE_URL,
+                        params={
+                            "q": query,
+                            "sortBy": "publishedAt",
+                            "pageSize": 20,
+                            "language": "en",
+                            "apiKey": self.api_key,
+                        },
+                        timeout=10,
+                    )
+                    if resp.status_code == 429:
+                        log.warning("[newsapi] Rate limit hit — slowing down")
+                        await asyncio.sleep(60)
+                        continue
+                    if resp.status_code != 200:
+                        await asyncio.sleep(self.interval)
+                        continue
+
+                    articles = resp.json().get("articles", [])
+                    now = datetime.now(timezone.utc)
+                    new_count = 0
+
+                    for article in articles:
+                        headline = article.get("title", "").strip()
+                        if not headline or headline == "[Removed]":
+                            continue
+
+                        key = headline.lower()[:80]
+                        if key in self._seen:
+                            continue
+                        self._seen.add(key)
+                        new_count += 1
+
+                        pub_str = article.get("publishedAt", "")
+                        try:
+                            pub = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                        except Exception:
+                            pub = now
+                        latency = int((now - pub).total_seconds() * 1000)
+
+                        # Skip stale articles (>30 min old)
+                        if latency > 1800000:
+                            continue
+
+                        event = NewsEvent(
+                            headline=headline,
+                            source="newsapi",
+                            url=article.get("url", ""),
+                            received_at=now,
+                            published_at=pub,
+                            summary=article.get("description", "")[:300],
+                            latency_ms=latency,
+                        )
+                        await queue.put(event)
+
+                    if new_count:
+                        log.info(f"[newsapi] {new_count} new articles (query: {query[:40]})")
+
+                    if len(self._seen) > 5000:
+                        self._seen = set(list(self._seen)[-2000:])
+
+            except Exception as e:
+                log.warning(f"[newsapi] Error: {e}")
+
+            await asyncio.sleep(self.interval)
+
+
+class RedditSource:
+    """
+    Reddit JSON API — no key required.
+    Polls /new on subreddits relevant to prediction markets.
+    Reddit often breaks news before mainstream outlets.
+    """
+
+    SUBREDDITS = [
+        "Bitcoin", "CryptoCurrency", "ethereum",
+        "politics", "worldnews", "economy",
+        "artificial", "OpenAI", "stocks",
+    ]
+
+    def __init__(self, interval_seconds: float = 45):
+        self.interval = interval_seconds
+        self._seen: set[str] = set()
+        self._headers = {
+            "User-Agent": "polymarket-pipeline/3.0 (news aggregator)"
+        }
+
+    async def stream(self, queue: asyncio.Queue):
+        log.info("[reddit] Starting — polling /new on 9 subreddits every 45s")
+        sub_cycle = 0
+
+        while True:
+            try:
+                sub = self.SUBREDDITS[sub_cycle % len(self.SUBREDDITS)]
+                sub_cycle += 1
+
+                async with httpx.AsyncClient(headers=self._headers) as client:
+                    resp = await client.get(
+                        f"https://www.reddit.com/r/{sub}/new.json",
+                        params={"limit": 15},
+                        timeout=10,
+                    )
+                    if resp.status_code != 200:
+                        await asyncio.sleep(self.interval)
+                        continue
+
+                    posts = resp.json().get("data", {}).get("children", [])
+                    now = datetime.now(timezone.utc)
+                    new_count = 0
+
+                    for post in posts:
+                        data = post.get("data", {})
+                        title = data.get("title", "").strip()
+                        if not title:
+                            continue
+
+                        key = title.lower()[:80]
+                        if key in self._seen:
+                            continue
+                        self._seen.add(key)
+
+                        created_utc = data.get("created_utc", 0)
+                        pub = datetime.fromtimestamp(created_utc, tz=timezone.utc)
+                        latency = int((now - pub).total_seconds() * 1000)
+
+                        # Skip posts older than 20 minutes
+                        if latency > 1200000:
+                            continue
+
+                        new_count += 1
+                        event = NewsEvent(
+                            headline=title,
+                            source="reddit",
+                            url=f"https://reddit.com{data.get('permalink', '')}",
+                            received_at=now,
+                            published_at=pub,
+                            summary=data.get("selftext", "")[:200],
+                            latency_ms=latency,
+                        )
+                        await queue.put(event)
+
+                    if new_count:
+                        log.info(f"[reddit] {new_count} new posts (r/{sub})")
+
+                    if len(self._seen) > 5000:
+                        self._seen = set(list(self._seen)[-2000:])
+
+            except Exception as e:
+                log.warning(f"[reddit] Error: {e}")
+
+            await asyncio.sleep(self.interval)
+
+
 class RSSFallback:
     """Periodic RSS scraping as a fallback news source."""
 
@@ -278,8 +469,13 @@ class NewsAggregator:
         self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, config.TWITTER_KEYWORDS)
         self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
         self.rss = RSSFallback(interval_seconds=60)
+        self.newsapi = NewsAPISource(config.NEWSAPI_KEY, interval_seconds=30)
+        self.reddit = RedditSource(interval_seconds=45)
 
-        self.stats = {"twitter": 0, "telegram": 0, "rss": 0, "total": 0, "deduped": 0}
+        self.stats = {
+            "twitter": 0, "telegram": 0, "rss": 0,
+            "newsapi": 0, "reddit": 0, "total": 0, "deduped": 0,
+        }
 
     async def run(self):
         """Start all sources and the dedup router."""
@@ -287,6 +483,8 @@ class NewsAggregator:
             self.twitter.stream(self._internal_queue),
             self.telegram.stream(self._internal_queue),
             self.rss.stream(self._internal_queue),
+            self.newsapi.stream(self._internal_queue),
+            self.reddit.stream(self._internal_queue),
             self._dedup_router(),
             return_exceptions=True,
         )
