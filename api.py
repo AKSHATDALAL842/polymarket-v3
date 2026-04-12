@@ -110,7 +110,10 @@ async def signals_recent(limit: int = Query(default=20, ge=1, le=200)):
 # ── Tracked markets ───────────────────────────────────────────────────────────
 
 @app.get("/markets")
-async def markets():
+async def markets(
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    source: Optional[str] = Query(default=None, description="Filter by platform: polymarket|kalshi"),
+):
     pipeline = _get_pipeline()
     mkt_list = [
         {
@@ -125,6 +128,11 @@ async def markets():
         }
         for m in pipeline.watcher.tracked_markets
     ]
+    if category:
+        mkt_list = [m for m in mkt_list if m["category"] == category]
+    if source:
+        mkt_list = [m for m in mkt_list if m["source"] == source]
+
     poly_count   = sum(1 for m in mkt_list if m["source"] == "polymarket")
     kalshi_count = sum(1 for m in mkt_list if m["source"] == "kalshi")
     return {
@@ -138,12 +146,48 @@ async def markets():
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/stats")
-async def stats():
-    from logger import get_trade_stats, get_calibration_stats, get_latency_stats
-    return {
+async def stats(
+    category: Optional[str] = Query(default=None, description="Filter stats by category"),
+):
+    from logger import get_trade_stats, get_calibration_stats, get_latency_stats, get_category_stats
+    result = {
         "trades": get_trade_stats(),
         "calibration": get_calibration_stats(),
         "latency": get_latency_stats(),
+    }
+    if category:
+        all_cat_stats = get_category_stats()
+        result["category"] = all_cat_stats.get(category, {})
+    else:
+        result["by_category"] = get_category_stats()
+    return result
+
+
+# ── Portfolio state ───────────────────────────────────────────────────────────
+
+@app.get("/portfolio")
+async def portfolio_state():
+    from portfolio import get_portfolio
+    return get_portfolio().get_portfolio_state()
+
+
+# ── Categories ────────────────────────────────────────────────────────────────
+
+@app.get("/categories")
+async def categories_info():
+    import config
+    from categories import CATEGORIES
+    pipeline = _get_pipeline()
+    markets = pipeline.watcher.tracked_markets
+
+    counts: dict[str, int] = {}
+    for cat in CATEGORIES:
+        counts[cat] = sum(1 for m in markets if getattr(m, "category", "") == cat)
+
+    return {
+        "available": list(CATEGORIES.keys()),
+        "selected": config.SELECTED_CATEGORIES,
+        "counts": counts,
     }
 
 
