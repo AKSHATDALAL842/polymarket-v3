@@ -61,6 +61,10 @@ def cmd_watch(args):
     if args.threshold:
         config.MATERIALITY_THRESHOLD = args.threshold
 
+    if args.categories:
+        config.SELECTED_CATEGORIES = [c.strip() for c in args.categories.split(",") if c.strip()]
+        console.print(f"[cyan]Categories: {config.SELECTED_CATEGORIES}[/cyan]\n")
+
     run_pipeline_v2()
 
 
@@ -394,6 +398,12 @@ def main():
     p_watch = sub.add_parser("watch", help="V2: Event-driven pipeline (real-time)")
     p_watch.add_argument("--live", action="store_true", help="Enable live trading")
     p_watch.add_argument("--threshold", type=float, default=None, help="Materiality threshold override")
+    p_watch.add_argument(
+        "--categories",
+        type=str,
+        default=None,
+        help="Comma-separated categories: crypto,politics,economics (default: all)"
+    )
     p_watch.set_defaults(func=cmd_watch)
 
     # run (V1)
