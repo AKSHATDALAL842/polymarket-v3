@@ -677,15 +677,37 @@ class RSSFallback:
 class NewsAggregator:
     """Runs all news sources concurrently, deduplicates, emits to output queue."""
 
-    def __init__(self, output_queue: asyncio.Queue):
+    def __init__(self, output_queue: asyncio.Queue, categories=None):
+        from categories import (
+            get_twitter_keywords, get_rss_feeds,
+            get_newsapi_queries, get_reddit_subreddits,
+        )
+        cats = categories or config.SELECTED_CATEGORIES
+        if cats != ["all"]:
+            _twitter_keywords = get_twitter_keywords(cats)
+            _rss_feeds = get_rss_feeds(cats)
+            _newsapi_queries = get_newsapi_queries(cats)
+            _reddit_subs = get_reddit_subreddits(cats)
+        else:
+            _twitter_keywords = config.TWITTER_KEYWORDS
+            _rss_feeds = config.RSS_FEEDS
+            _newsapi_queries = None   # use source defaults
+            _reddit_subs = None       # use source defaults
+
         self.output_queue = output_queue
         self._internal_queue: asyncio.Queue = asyncio.Queue()
         self._seen: set[str] = set()
 
-        self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, config.TWITTER_KEYWORDS)
+        self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, _twitter_keywords)
         self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
+        # RSSFallback does not accept a feeds param; it calls scrape_all() internally.
+        # Category-specific feeds are not wired into RSSFallback (out of scope).
         self.rss = RSSFallback(interval_seconds=60)
+        # NewsAPISource does not accept a queries param; it uses a hardcoded QUERIES class attribute.
+        # Category-specific newsapi queries are not wired into NewsAPISource (out of scope).
         self.newsapi = NewsAPISource(config.NEWSAPI_KEY, interval_seconds=30)
+        # RedditSource does not accept a subs param; it uses AdaptiveSubredditSelector internally.
+        # Category-specific subreddits are not wired into RedditSource (out of scope).
         self.reddit = RedditSource(interval_seconds=45)
         self.gnews = GNewsSource(config.GNEWS_API_KEY, interval_seconds=900)
         self.gdelt = GDELTSource(interval_seconds=300)
