@@ -276,6 +276,8 @@ def _log_trade(
             news_latency_ms=signal.news_latency_ms,
             classification_latency_ms=cls.total_latency_ms,
             total_latency_ms=latency_ms,
+            category=getattr(signal.market, "category", None),
+            platform=getattr(signal.market, "source", "polymarket"),
         )
     except Exception as e:
         log.warning(f"[executor] Log failed: {e}")
@@ -311,7 +313,12 @@ def execute_trade(signal: Signal) -> ExecutionResult:
         return execute_kalshi(signal)
 
     if config.DRY_RUN:
-        return _dry_run_execution(signal, exec_start)
+        try:
+            from portfolio import get_portfolio
+            return get_portfolio().simulate_trade(signal)
+        except Exception as e:
+            log.warning(f"[executor] Portfolio unavailable, falling back to dry_run: {e}")
+            return _dry_run_execution(signal, exec_start)
 
     return _execute_live(signal, exec_start)
 
