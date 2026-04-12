@@ -9,6 +9,7 @@ from categories import (
     get_rss_feeds,
     get_newsapi_queries,
     get_reddit_subreddits,
+    get_category,
 )
 from dataclasses import dataclass
 
@@ -66,3 +67,21 @@ def test_get_reddit_subreddits_returns_list():
     subs = get_reddit_subreddits(["technology"])
     assert isinstance(subs, list)
     assert len(subs) > 0
+
+
+def test_get_category_crypto():
+    event = FakeEvent(headline="Bitcoin crashes amid SEC lawsuit")
+    assert get_category(event) == "crypto"
+
+
+def test_get_category_fallback():
+    event = FakeEvent(headline="A completely unrelated sentence with no keywords")
+    assert get_category(event) == "other"
+
+
+def test_get_twitter_keywords_all():
+    kws = get_twitter_keywords(["all"])
+    assert len(kws) > 0
+    assert "Bitcoin" in kws
+    assert "OpenAI" in kws
+    assert "Trump" in kws
