@@ -203,12 +203,19 @@ def get_max_drawdown() -> float:
 ```
 
 **P&L accounting:**
-- Opening a position: `balance -= size_usd`
-- Closing YES position at exit: `realized_pnl = size_usd * (exit_price - entry_price) / entry_price`
-- Closing NO position at exit: `realized_pnl = size_usd * (entry_price - exit_price) / entry_price`
-- Balance on close: `balance += size_usd + realized_pnl`
-- Unrealized: same formula using current market price
-- Portfolio total value: `balance + sum(unrealized for all open positions)`
+
+All prices are stored as **YES prices** throughout (never converted). `size` = contracts.
+
+```
+YES:  pnl = size * (exit_price - entry_price)
+NO:   pnl = size * ((1 - exit_price) - (1 - entry_price))
+          = size * (entry_price - exit_price)
+```
+
+- Opening: `contracts = bet_amount / entry_yes_price`, `size_usd = bet_amount`, `balance -= size_usd`
+- Closing: compute `realized_pnl` using formula above, then `balance += size_usd + realized_pnl`
+- Unrealized P&L: same formula with `current_yes_price` from watcher snapshot
+- Portfolio total value: `balance + sum(unrealized_pnl_i for all open positions)`
 
 ---
 
