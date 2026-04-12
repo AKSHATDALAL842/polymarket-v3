@@ -139,10 +139,11 @@ def is_relevant_event(event, selected: list[str]) -> bool:
 
 
 def get_twitter_keywords(categories: list[str]) -> list[str]:
-    """Union of twitter_keywords across selected categories."""
+    """Union of twitter_keywords across selected categories. Pass ["all"] for all categories."""
+    cats = list(CATEGORIES.keys()) if categories == ["all"] else categories
     result: list[str] = []
     seen: set[str] = set()
-    for cat in categories:
+    for cat in cats:
         for kw in CATEGORIES.get(cat, {}).get("twitter_keywords", []):
             if kw not in seen:
                 seen.add(kw)
@@ -151,10 +152,11 @@ def get_twitter_keywords(categories: list[str]) -> list[str]:
 
 
 def get_rss_feeds(categories: list[str]) -> list[str]:
-    """Union of rss_feeds across selected categories."""
+    """Union of rss_feeds across selected categories. Pass ["all"] for all categories."""
+    cats = list(CATEGORIES.keys()) if categories == ["all"] else categories
     result: list[str] = []
     seen: set[str] = set()
-    for cat in categories:
+    for cat in cats:
         for feed in CATEGORIES.get(cat, {}).get("rss_feeds", []):
             if feed not in seen:
                 seen.add(feed)
@@ -163,10 +165,11 @@ def get_rss_feeds(categories: list[str]) -> list[str]:
 
 
 def get_newsapi_queries(categories: list[str]) -> list[str]:
-    """Union of newsapi_queries across selected categories."""
+    """Union of newsapi_queries across selected categories. Pass ["all"] for all categories."""
+    cats = list(CATEGORIES.keys()) if categories == ["all"] else categories
     result: list[str] = []
     seen: set[str] = set()
-    for cat in categories:
+    for cat in cats:
         for q in CATEGORIES.get(cat, {}).get("newsapi_queries", []):
             if q not in seen:
                 seen.add(q)
@@ -175,10 +178,11 @@ def get_newsapi_queries(categories: list[str]) -> list[str]:
 
 
 def get_reddit_subreddits(categories: list[str]) -> list[str]:
-    """Union of reddit_subs across selected categories."""
+    """Union of reddit_subs across selected categories. Pass ["all"] for all categories."""
+    cats = list(CATEGORIES.keys()) if categories == ["all"] else categories
     result: list[str] = []
     seen: set[str] = set()
-    for cat in categories:
+    for cat in cats:
         for sub in CATEGORIES.get(cat, {}).get("reddit_subs", []):
             if sub not in seen:
                 seen.add(sub)
@@ -187,7 +191,11 @@ def get_reddit_subreddits(categories: list[str]) -> list[str]:
 
 
 def get_category(event_or_market) -> str:
-    """Infer category from event headline or market question text."""
-    from markets import _infer_category  # type: ignore
+    """Infer the best-matching category from an event headline or market question."""
     text = getattr(event_or_market, "headline", None) or getattr(event_or_market, "question", "")
-    return _infer_category(text)
+    text_lower = text.lower()
+    for cat, data in CATEGORIES.items():
+        for kw in data.get("keywords", []):
+            if kw.lower() in text_lower:
+                return cat
+    return "other"
