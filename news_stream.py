@@ -627,8 +627,9 @@ class GDELTSource:
 class RSSFallback:
     """Periodic RSS scraping as a fallback news source."""
 
-    def __init__(self, interval_seconds: float = 120):
+    def __init__(self, interval_seconds: float = 120, feeds=None):
         self.interval = interval_seconds
+        self._feeds = feeds
         self._seen_headlines: set[str] = set()
 
     async def stream(self, queue: asyncio.Queue):
@@ -636,7 +637,7 @@ class RSSFallback:
         while True:
             try:
                 items = await asyncio.get_event_loop().run_in_executor(
-                    None, scrape_all
+                    None, lambda: scrape_all(feeds=self._feeds)
                 )
                 now = datetime.now(timezone.utc)
                 new_count = 0
@@ -700,9 +701,7 @@ class NewsAggregator:
 
         self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, _twitter_keywords)
         self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
-        # RSSFallback does not accept a feeds param; it calls scrape_all() internally.
-        # Category-specific feeds are not wired into RSSFallback (out of scope).
-        self.rss = RSSFallback(interval_seconds=60)
+        self.rss = RSSFallback(interval_seconds=60, feeds=_rss_feeds)
         # NewsAPISource does not accept a queries param; it uses a hardcoded QUERIES class attribute.
         # Category-specific newsapi queries are not wired into NewsAPISource (out of scope).
         self.newsapi = NewsAPISource(config.NEWSAPI_KEY, interval_seconds=30)
