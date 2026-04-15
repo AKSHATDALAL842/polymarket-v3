@@ -121,6 +121,12 @@ class Pipeline:
         source = event.source
         news_latency_ms = getattr(event, "receive_latency_ms", 0)
 
+        # Category gate: drop events not matching selected categories
+        from categories import is_relevant_event
+        if not is_relevant_event(event, config.SELECTED_CATEGORIES):
+            log.debug(f"[pipeline] Skipping (not in categories): {headline[:60]}")
+            return
+
         # Step 0: NLP enrichment — NER, sentiment, impact score, temporal decay
         if config.NLP_ENABLED:
             age_seconds = event.age_seconds()

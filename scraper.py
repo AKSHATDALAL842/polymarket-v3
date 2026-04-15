@@ -114,12 +114,13 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
     return unique
 
 
-def scrape_all(lookback_hours: int | None = None) -> list[NewsItem]:
+def scrape_all(lookback_hours: int | None = None, feeds=None) -> list[NewsItem]:
     """Run all scrapers and return deduplicated, sorted results."""
     hours = lookback_hours or config.NEWS_LOOKBACK_HOURS
     all_items = []
 
-    for feed_url in config.RSS_FEEDS:
+    feed_list = feeds if feeds is not None else config.RSS_FEEDS
+    for feed_url in feed_list:
         all_items.extend(scrape_rss(feed_url, hours))
         time.sleep(0.5)  # polite crawling
 
