@@ -88,6 +88,25 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_trades_market_id ON trades(market_id);
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
         CREATE INDEX IF NOT EXISTS idx_calibration_correct ON calibration(correct);
+
+        CREATE TABLE IF NOT EXISTS positions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_id       TEXT    NOT NULL,
+            market_question TEXT    NOT NULL,
+            platform        TEXT    NOT NULL,
+            category        TEXT    NOT NULL,
+            side            TEXT    NOT NULL,
+            entry_price     REAL    NOT NULL,
+            size_usd        REAL    NOT NULL,
+            contracts       REAL,
+            opened_at       TEXT    NOT NULL,
+            closed_at       TEXT,
+            exit_price      REAL,
+            realized_pnl    REAL,
+            status          TEXT    NOT NULL DEFAULT 'open'
+        );
+        CREATE INDEX IF NOT EXISTS idx_positions_market_id ON positions(market_id);
+        CREATE INDEX IF NOT EXISTS idx_positions_status    ON positions(status);
     """)
     # Add V2 columns to existing trades table if missing
     _migrate_v2_columns(conn)
@@ -105,6 +124,8 @@ def _migrate_v2_columns(conn):
         ("news_latency_ms", "INTEGER"),
         ("classification_latency_ms", "INTEGER"),
         ("total_latency_ms", "INTEGER"),
+        ("category", "TEXT"),
+        ("platform", "TEXT"),
     ]
     for col_name, col_type in new_cols:
         if col_name not in columns:
@@ -130,6 +151,8 @@ def log_trade(
     news_latency_ms: int | None = None,
     classification_latency_ms: int | None = None,
     total_latency_ms: int | None = None,
+    category: str | None = None,
+    platform: str | None = None,
 ) -> int:
     conn = _conn()
     cur = conn.execute(
@@ -137,12 +160,14 @@ def log_trade(
            (market_id, market_question, claude_score, market_price, edge,
             side, amount_usd, order_id, status, reasoning, headlines,
             news_source, classification, materiality,
-            news_latency_ms, classification_latency_ms, total_latency_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            news_latency_ms, classification_latency_ms, total_latency_ms,
+            category, platform)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (market_id, market_question, claude_score, market_price, edge,
          side, amount_usd, order_id, status, reasoning, headlines,
          news_source, classification, materiality,
-         news_latency_ms, classification_latency_ms, total_latency_ms),
+         news_latency_ms, classification_latency_ms, total_latency_ms,
+         category, platform),
     )
     trade_id = cur.lastrowid
     conn.commit()
@@ -353,6 +378,96 @@ def get_latency_stats() -> dict:
         "avg_class_ms": round(row["avg_class"] or 0),
         "count": row["count"],
     }
+
+
+def log_position(
+    market_id: str,
+    market_question: str,
+    platform: str,
+    category: str,
+    side: str,
+    entry_price: float,
+    size_usd: float,
+    contracts: float,
+    opened_at: str,
+) -> int:
+    conn = _conn()
+    cur = conn.execute(
+        """INSERT INTO positions
+           (market_id, market_question, platform, category, side,
+            entry_price, size_usd, contracts, opened_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (market_id, market_question, platform, category, side,
+         entry_price, size_usd, contracts, opened_at),
+    )
+    position_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return position_id
+
+
+def update_position_closed(
+    position_id: int,
+    exit_price: float,
+    realized_pnl: float,
+    closed_at: str,
+):
+    conn = _conn()
+    cur = conn.execute(
+        """UPDATE positions
+           SET exit_price=?, realized_pnl=?, closed_at=?, status='closed'
+           WHERE id=?""",
+        (exit_price, realized_pnl, closed_at, position_id),
+    )
+    if cur.rowcount == 0:
+        conn.close()
+        raise ValueError(f"update_position_closed: no position found with id={position_id}")
+    conn.commit()
+    conn.close()
+
+
+def get_open_positions() -> list[dict]:
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status='open' ORDER BY opened_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_closed_positions(limit: int = 100) -> list[dict]:
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status='closed' ORDER BY closed_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_category_stats() -> dict:
+    """Returns win_rate, total_pnl, trade_count per category from closed positions."""
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT category,
+                  COUNT(*) as trade_count,
+                  SUM(realized_pnl) as total_pnl,
+                  SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as wins
+           FROM positions
+           WHERE status='closed'
+           GROUP BY category"""
+    ).fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        count = r["trade_count"]
+        wins = r["wins"] or 0
+        result[r["category"]] = {
+            "trade_count": count,
+            "total_pnl": round(r["total_pnl"] or 0.0, 2),
+            "win_rate": round(wins / count, 3) if count > 0 else 0.0,
+        }
+    return result
 
 
 init_db()

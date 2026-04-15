@@ -157,3 +157,13 @@ NLP_DECAY_LAMBDA = 0.05    # temporal decay constant (per minute)
 # ── Performance Targets ────────────────────────────────────────────────────────
 SPEED_TARGET_SECONDS = float(os.getenv("SPEED_TARGET_SECONDS", "5"))
 LATENCY_WARN_MS = 3000
+
+# ── Category selection ─────────────────────────────────────────────────────────
+SELECTED_CATEGORIES = [
+    c.strip()
+    for c in os.getenv("SELECTED_CATEGORIES", "all").split(",")
+    if c.strip()
+]
+
+# ── Paper trading ──────────────────────────────────────────────────────────────
+PAPER_BALANCE = float(os.getenv("PAPER_BALANCE", "1000000"))
