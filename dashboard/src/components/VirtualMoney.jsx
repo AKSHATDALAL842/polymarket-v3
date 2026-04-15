@@ -161,7 +161,7 @@ export default function VirtualMoney() {
                   {openList.map((pos, i) => (
                     <tr key={i}>
                       <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
-                        {pos.market_question}
+                        {pos.question || pos.market_question || pos.market_id}
                       </td>
                       <td>
                         <span className={`status-pill s-${pos.platform === 'kalshi' ? 'filled' : 'dry_run'}`}>
@@ -228,7 +228,7 @@ export default function VirtualMoney() {
                   {closedList.map((pos, i) => (
                     <tr key={i}>
                       <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
-                        {pos.market_question}
+                        {pos.question || pos.market_question || pos.market_id}
                       </td>
                       <td>
                         <span className={`status-pill s-${pos.platform === 'kalshi' ? 'filled' : 'dry_run'}`}>
