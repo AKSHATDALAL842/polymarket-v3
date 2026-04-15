@@ -160,7 +160,7 @@ export default function VirtualMoney() {
                 <tbody>
                   {openList.map((pos, i) => (
                     <tr key={i}>
-                      <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--txt)' }}>
+                      <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
                         {pos.market_question}
                       </td>
                       <td>
@@ -227,7 +227,7 @@ export default function VirtualMoney() {
                 <tbody>
                   {closedList.map((pos, i) => (
                     <tr key={i}>
-                      <td style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--txt)' }}>
+                      <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
                         {pos.market_question}
                       </td>
                       <td>

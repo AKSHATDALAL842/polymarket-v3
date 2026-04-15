@@ -1092,6 +1092,7 @@ body::after {
 .vm-table-wrap .data-table tbody td {
   border-bottom: 1px solid var(--border-dim);
   color: var(--txt);
+  white-space: normal;
 }
 
 .vm-table-wrap .data-table tbody tr:last-child td { border-bottom: none; }
