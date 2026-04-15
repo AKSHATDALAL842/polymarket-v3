@@ -7,13 +7,21 @@ import TradesTable   from './components/TradesTable.jsx'
 import PortfolioPanel from './components/PortfolioPanel.jsx'
 import SourceMonitor  from './components/SourceMonitor.jsx'
 import PredictionTool from './components/PredictionTool.jsx'
+import VirtualMoney   from './components/VirtualMoney.jsx'
 import useWebSocket  from './hooks/useWebSocket.js'
 import usePolling    from './hooks/usePolling.js'
 
 const WS_URL  = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/signals`
 const API     = '/api'
 
+const TABS = [
+  { id: 'dashboard',     label: 'Dashboard' },
+  { id: 'virtual-money', label: 'Virtual Money' },
+]
+
 export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard')
+
   // WebSocket live signals
   const { connected, lastMessage } = useWebSocket(WS_URL)
 
@@ -34,7 +42,6 @@ export default function App() {
   useEffect(() => {
     if (tradesData?.signals) {
       setSignals(prev => {
-        // Only seed if we have no live WS signals yet (first load)
         if (prev.length === 0) return tradesData.signals
         return prev
       })
@@ -57,31 +64,53 @@ export default function App() {
     <div className="app-wrap">
       <StatusBar status={status} connected={connected} />
 
-      <div className="main-grid">
-        {/* LEFT: Live signal feed */}
-        <SignalFeed signals={signals} />
-
-        {/* CENTER: Metrics → Markets → Trades */}
-        <div className="col-center">
-          <MetricsGrid stats={stats} status={status} />
-          <MarketTable markets={markets} />
-          <TradesTable trades={trades} />
-        </div>
-
-        {/* RIGHT: Portfolio → Sources */}
-        <div className="col-right">
-          <PortfolioPanel
-            stats={stats}
-            status={status}
-            portfolio={portfolio}
-            onPortfolioChange={setPortfolio}
-          />
-          <SourceMonitor sources={sources} />
-        </div>
+      {/* ── Tab bar ── */}
+      <div className="tabs">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {/* BOTTOM: Prediction tool */}
-      <PredictionTool />
+      {/* ── Tab content ── */}
+      {activeTab === 'dashboard' && (
+        <>
+          <div className="main-grid">
+            {/* LEFT: Live signal feed */}
+            <SignalFeed signals={signals} />
+
+            {/* CENTER: Metrics → Markets → Trades */}
+            <div className="col-center">
+              <MetricsGrid stats={stats} status={status} />
+              <MarketTable markets={markets} />
+              <TradesTable trades={trades} />
+            </div>
+
+            {/* RIGHT: Portfolio → Sources */}
+            <div className="col-right">
+              <PortfolioPanel
+                stats={stats}
+                status={status}
+                portfolio={portfolio}
+                onPortfolioChange={setPortfolio}
+              />
+              <SourceMonitor sources={sources} />
+            </div>
+          </div>
+
+          {/* BOTTOM: Prediction tool */}
+          <PredictionTool />
+        </>
+      )}
+
+      {activeTab === 'virtual-money' && (
+        <VirtualMoney />
+      )}
     </div>
   )
 }
