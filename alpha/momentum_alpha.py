@@ -118,7 +118,7 @@ class MomentumAlpha(BaseAlpha):
                     self._price_history.append((time.time(), price))
                     momentum = self._compute_momentum()
                     if momentum is not None:
-                        await self._update_buffer(watcher, momentum)
+                        self._update_buffer(watcher, momentum)
             except Exception as e:
                 log.warning(f"[momentum_alpha] Error: {e}")
             await asyncio.sleep(POLL_INTERVAL)
@@ -154,12 +154,13 @@ class MomentumAlpha(BaseAlpha):
         now = time.time()
         cutoff = now - WINDOW_SECONDS  # 5 minutes ago
 
-        # Find the oldest price that is within the 5-minute window
+        # Find the newest price that is at-or-before the 5-minute cutoff
         old_price = None
         for ts, price in self._price_history:
-            if ts >= cutoff:
-                old_price = price
-                break
+            if ts <= cutoff:
+                old_price = price  # keep updating; last match is newest-before-cutoff
+            else:
+                break  # entries are oldest-to-newest; once we see ts > cutoff, stop
 
         if old_price is None:
             return None
@@ -169,7 +170,7 @@ class MomentumAlpha(BaseAlpha):
         log.debug(f"[momentum_alpha] 5m momentum = {momentum:+.3%}")
         return momentum
 
-    async def _update_buffer(self, watcher, momentum: float):
+    def _update_buffer(self, watcher, momentum: float):
         """Update signal buffer for all tracked BTC markets."""
         if abs(momentum) < MOMENTUM_THRESHOLD:
             # Clear stale signals when momentum subsides
