@@ -11,6 +11,7 @@ import time
 _VALID_DIRECTIONS = ("YES", "NO")
 _VALID_HORIZONS   = ("5m", "1h", "1d")
 _VALID_STRATEGIES = ("news", "momentum")
+_VALID_MULTIPLIERS = (0.4, 0.6, 1.0)  # conflict, single, agreement
 
 
 @dataclass
@@ -28,14 +29,16 @@ class AlphaSignal:
     raw_signal: object = field(default=None, repr=False) # edge_model.Signal reference
 
     def __post_init__(self):
-        assert self.direction in _VALID_DIRECTIONS, \
-            f"direction must be YES or NO, got {self.direction!r}"
-        assert 0.0 <= self.confidence <= 1.0, \
-            f"confidence must be in [0,1], got {self.confidence}"
-        assert self.horizon in _VALID_HORIZONS, \
-            f"horizon must be 5m|1h|1d, got {self.horizon!r}"
-        assert self.strategy in _VALID_STRATEGIES, \
-            f"strategy must be news|momentum, got {self.strategy!r}"
+        if self.direction not in _VALID_DIRECTIONS:
+            raise ValueError(f"direction must be YES or NO, got {self.direction!r}")
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(f"confidence must be in [0,1], got {self.confidence}")
+        if self.horizon not in _VALID_HORIZONS:
+            raise ValueError(f"horizon must be 5m|1h|1d, got {self.horizon!r}")
+        if self.strategy not in _VALID_STRATEGIES:
+            raise ValueError(f"strategy must be news|momentum, got {self.strategy!r}")
+        if not self.market_id:
+            raise ValueError("market_id must not be empty")
 
 
 @dataclass
@@ -43,6 +46,9 @@ class AggregatedSignal:
     """
     Combined signal from multiple alpha strategies targeting the same market.
     Produced by ensemble.combine(). This is what PortfolioManager receives.
+
+    size_multiplier is always one of: 1.0 (agreement), 0.6 (single strategy), 0.4 (conflict).
+    These values are exact IEEE 754 floats — no rounding error.
     """
     market_id: str
     market_question: str
@@ -54,6 +60,16 @@ class AggregatedSignal:
     signals: list           # list[AlphaSignal] that were combined
     timestamp: float = field(default_factory=time.time)
     market: object = field(default=None, repr=False)  # markets.Market reference
+
+    def __post_init__(self):
+        if self.direction not in _VALID_DIRECTIONS:
+            raise ValueError(f"direction must be YES or NO, got {self.direction!r}")
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(f"confidence must be in [0,1], got {self.confidence}")
+        if self.size_multiplier not in _VALID_MULTIPLIERS:
+            raise ValueError(
+                f"size_multiplier must be one of {_VALID_MULTIPLIERS}, got {self.size_multiplier}"
+            )
 
     @property
     def is_strong(self) -> bool:
