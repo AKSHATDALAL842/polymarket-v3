@@ -60,9 +60,9 @@ class Allocator:
         sized = base * signal.size_multiplier
 
         # Drawdown scalar: linearly reduce up to 50% size at 25% drawdown
-        # At drawdown=0.0 → scalar=1.0
-        # At drawdown=0.25 → scalar=0.5
-        # At drawdown>=0.5 → scalar=0.0 (no trades)
+        # At drawdown=0.0 → scalar=1.0 (full size)
+        # At drawdown=0.25 → scalar=0.5 (half size)
+        # At drawdown>=0.5 → scalar=0.0, but $1 floor applies (minimum trade maintained)
         drawdown_scalar = max(0.0, 1.0 - drawdown * 2.0)
         dd_scaled = sized * drawdown_scalar
 
