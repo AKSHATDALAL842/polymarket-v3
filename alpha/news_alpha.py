@@ -34,12 +34,11 @@ class NewsAlpha(BaseAlpha):
         if signal is None:
             return None
 
-        cls = signal.classification
-        horizon = _HORIZON_MAP.get(
-            getattr(cls, "time_sensitivity", "short-term"), "1h"
-        )
-
         try:
+            cls = signal.classification
+            horizon = _HORIZON_MAP.get(
+                getattr(cls, "time_sensitivity", "short-term"), "1h"
+            )
             return AlphaSignal(
                 market_id=signal.market.condition_id,
                 market_question=signal.market.question,
