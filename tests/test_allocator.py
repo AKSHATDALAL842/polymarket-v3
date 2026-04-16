@@ -57,3 +57,28 @@ def test_allocator_minimum_one_dollar():
     sig = make_agg(confidence=0.55, edge=0.03, multiplier=0.4)
     size = a.compute_size(sig, drawdown=0.0)
     assert size >= 1.0
+
+
+def test_allocator_exact_arithmetic():
+    """Verify formula produces exactly the expected value."""
+    a = Allocator(capital=1_000_000, max_bet=25.0, sizing_k=0.25, bankroll=1000.0)
+    sig = make_agg(confidence=0.75, edge=0.06, multiplier=1.0)
+    size = a.compute_size(sig, drawdown=0.0)
+    # base = 0.25 * 0.06 * 0.75 * 1000 = 11.25
+    # * multiplier 1.0, drawdown_scalar 1.0 → 11.25
+    assert size == 11.25
+
+
+def test_allocator_floor_at_extreme_drawdown():
+    """At drawdown=0.5 scalar=0 but $1 floor is enforced."""
+    a = Allocator(capital=1_000_000, max_bet=25.0, sizing_k=0.25, bankroll=1000.0)
+    sig = make_agg(confidence=0.75, edge=0.06, multiplier=1.0)
+    size = a.compute_size(sig, drawdown=0.5)
+    assert size == 1.0  # floor enforced, not zero
+
+
+def test_allocator_update_capital():
+    """update_capital persists the new value."""
+    a = Allocator(capital=10_000.0, max_bet=25.0, sizing_k=0.25, bankroll=1000.0)
+    a.update_capital(50_000.0)
+    assert a.capital == 50_000.0
