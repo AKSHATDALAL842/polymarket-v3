@@ -12,6 +12,7 @@ For momentum-only signals, a minimal Signal stub is constructed.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from threading import Lock
 from typing import Optional
@@ -85,14 +86,14 @@ class ExecutionEngine:
         # Try to reuse original news Signal
         for alpha_sig in agg.signals:
             if alpha_sig.strategy == "news" and alpha_sig.raw_signal is not None:
-                raw = alpha_sig.raw_signal
+                raw = copy.copy(alpha_sig.raw_signal)
                 raw.bet_amount = size_usd
                 return raw
 
         # Build momentum stub Signal
         market = agg.market
         direction = agg.direction
-        p_market = market.yes_price
+        p_market = getattr(market, 'yes_price', 0.5)
 
         cls = Classification(
             direction=direction,
