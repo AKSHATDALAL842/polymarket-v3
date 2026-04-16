@@ -1,0 +1,671 @@
+================================================================================
+POLYMARKET V3 — SYSTEM DOCUMENTATION
+Last updated: 2026-04-16
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+1. WHAT THE SYSTEM DOES
+────────────────────────────────────────────────────────────────────────────────
+
+An autonomous event-driven trading pipeline for Polymarket and Kalshi prediction
+markets. It ingests breaking news from 7 sources, semantically matches each
+headline to relevant open markets, runs 3-pass LLM classification to determine
+a directional signal (YES/NO), estimates expected value, applies microstructure
+and risk filters, and places paper trades against a $1,000,000 virtual portfolio.
+
+Mode: DRY_RUN=true (paper trading). Live trading available with DRY_RUN=false.
+Target latency: <5 seconds from news ingestion to trade execution.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2. ARCHITECTURE OVERVIEW
+────────────────────────────────────────────────────────────────────────────────
+
+NewsAggregator (7 sources)
+  ↓ NewsEvent (headline, source, timestamp, latency_ms)
+  ↓
+[CATEGORY GATE] categories.is_relevant_event()
+  → drops event if headline doesn't match SELECTED_CATEGORIES keywords
+  ↓
+[NLP ENRICHMENT] nlp_processor.process()
+  → NER (spaCy), sentiment (VADER), impact score, temporal decay
+  → drops event if relevance < NLP_MIN_IMPACT (0.10)
+  ↓
+[SEMANTIC MATCHING] matcher.match_news_to_markets()
+  → sentence-transformers (all-MiniLM-L6-v2, 384-dim cosine similarity)
+  → top-k=5 markets above MATCHER_MIN_SIMILARITY=0.30
+  → if no matches: drop event
+  ↓
+[PARALLEL per matched market]
+  ↓
+  [MARKET COOLDOWN CHECK]
+  → skip if same market signalled within 600 seconds
+  ↓
+  [LLM CLASSIFICATION] classifier.classify_async()
+  → 3 concurrent LLM passes (llama-3.3-70b via Groq, temperature=0.15)
+  → outputs: direction (YES/NO/NEUTRAL), confidence, materiality,
+             novelty_score, time_sensitivity, consistency
+  → rejects if: consistency < 0.6, confidence < 0.55, novelty < 0.20
+  ↓
+  [MICROSTRUCTURE GATE] market_watcher snapshots
+  → skip if market is already moving (momentum > 5% in last 60s)
+  → skip if order book depth < $200
+  ↓
+  [EDGE MODEL] edge_model.compute_edge()
+  → p_true = p_market + adjustment(materiality, confidence, novelty)
+  → adjustment capped at 12%, boundary-corrected (won't push past 0.95/0.05)
+  → EV_net = |p_true - p_market| - estimated_slippage
+  → rejects if EV_net < EDGE_THRESHOLD (0.03)
+  → rejects if spread > 8% of mid
+  → rejects if liquidity_score < 0.20
+  → position size = min($25, 0.25 * EV * confidence * $1000 bankroll)
+  ↓
+  [RISK GATES] executor._check_risk_gates()
+  → rejects if daily loss >= $100
+  → rejects if open positions >= 5
+  → rejects if category exposure >= $60
+  → rejects if in consecutive-loss cooldown
+  → rejects if slippage > 3%
+  ↓
+  [EXECUTION] executor.execute_trade()
+  → DRY_RUN=true: portfolio.simulate_trade() — deducts virtual balance
+  → DRY_RUN=false: live limit order via Polymarket CLOB / Kalshi API
+  ↓
+  [LOGGING] logger.log_trade() + logger.log_position()
+  → SQLite WAL: trades table, positions table
+  ↓
+  [BROADCAST] broadcaster.publish()
+  → WebSocket push to dashboard (/ws/signals)
+
+
+────────────────────────────────────────────────────────────────────────────────
+3. NEWS SOURCES (7 total)
+────────────────────────────────────────────────────────────────────────────────
+
+SOURCE 1: Twitter/X (TwitterStream)
+  Protocol:   Twitter API v2 filtered stream (persistent HTTP connection)
+  Latency:    ~1s from tweet to pipeline
+  Keywords:   OpenAI, GPT-5, Anthropic, Claude, Bitcoin, Ethereum, Solana,
+              crypto, Fed rate, tariff, Congress, SpaceX, Apple, NVIDIA, etc.
+  Auth:       TWITTER_BEARER_TOKEN
+  Constraint: Requires Basic tier ($100/mo) for filtered stream access.
+              Free tier returns 429 → falls back to RSS-only.
+  Rule limit: 5 rules max on Basic tier. Keywords batched in groups of 5.
+  On error:   Exponential backoff (1s → 2s → ... → 60s cap), reconnects.
+
+SOURCE 2: Telegram (TelegramMonitor)
+  Protocol:   Bot API long polling (getUpdates, 30s timeout)
+  Latency:    ~5s from post to pipeline
+  Auth:       TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_IDS
+  Constraint: Disabled if no TELEGRAM_CHANNEL_IDS set (currently empty).
+  On error:   5s sleep, retry.
+
+SOURCE 3: RSS Feeds (RSSFallback)
+  Protocol:   HTTP polling every 60 seconds (category-aware feeds)
+  Latency:    60s–300s (depends on feed freshness)
+  Default feeds (14 total):
+    - Google News: AI, bitcoin/crypto, Fed rate, Trump/tariff, OpenAI, SpaceX
+    - TechCrunch, Ars Technica, The Verge, NYT Technology
+    - CoinTelegraph, CoinDesk
+    - Reuters: Top News, Business News
+  Category mode: When --categories is set, uses category-specific feeds
+                 instead of default list.
+  Dedup: headline[:80] seen-set (trimmed to 2000 when > 5000 entries)
+
+SOURCE 4: NewsAPI.org (NewsAPISource)
+  Protocol:   REST polling every 30s, cycles through 6 query groups
+  Latency:    2–3 minutes after publication
+  Queries:    Bitcoin/Ethereum/crypto, OpenAI/Anthropic/GPT, Federal Reserve/
+              inflation, Trump/tariff/election, SpaceX/NASA, NVIDIA/Apple/
+              Microsoft earnings
+  Auth:       NEWSAPI_KEY
+  Limit:      100 requests/day (free tier) — hits limit quickly due to 30s polling
+  Stale filter: drops articles > 30 minutes old
+  On 429:     60s sleep before retry
+
+SOURCE 5: Reddit (RedditSource)
+  Protocol:   Reddit JSON API (/r/{sub}/new.json), no auth required
+              AdaptiveSubredditSelector — alpha-weighted, performance-adaptive
+  Interval:   45s between polls
+  Subreddits: Adapts based on signal yield (crypto, stocks, worldnews,
+              politics, economy, investing, technology, science, etc.)
+  Filter:     is_high_signal() — keywords-based quality filter
+  Stale filter: drops posts > 20 minutes old
+  User-Agent: "polymarket-pipeline/3.0 (news aggregator)"
+
+SOURCE 6: GNews (GNewsSource)
+  Protocol:   REST polling every 15 minutes (900s), cycles through 6 topics
+  Latency:    5–15 minutes
+  Topics:     breaking, technology, business, world (top-headlines);
+              politics, crypto/bitcoin/ethereum (search)
+  Auth:       GNEWS_API_KEY
+  Limit:      100 requests/day (free tier) — ~96 req/day at 15min intervals
+  Stale filter: drops articles > 1 hour old
+  On 429:     1 hour sleep
+
+SOURCE 7: GDELT (GDELTSource)
+  Protocol:   GDELT DOC 2.0 API, polling every 5 minutes (300s)
+              No key required — free, global event coverage
+  Queries (8, cycled): Federal Reserve interest rate, election results,
+              sanctions/war/military, OpenAI/Google/Microsoft AI,
+              Bitcoin/Ethereum/SEC, SpaceX/NASA, trade/tariff, central bank
+  Latency:    5–30 minutes
+  Stale filter: drops articles > 30 minutes old
+  Coverage:   Geopolitical + macro — strongest for politics/economics
+
+DEDUPLICATION (NewsAggregator._dedup_router):
+  All 7 sources feed into an internal queue. A dedup router checks
+  headline[:80].lower() against a seen-set before forwarding to the pipeline.
+  Seen-set trimmed to last 5000 when > 10000 entries.
+
+
+────────────────────────────────────────────────────────────────────────────────
+4. MARKET SOURCES
+────────────────────────────────────────────────────────────────────────────────
+
+POLYMARKET (markets.py):
+  Primary:  Gamma API — fetches top 50 markets sorted by volume descending
+            GET https://gamma-api.polymarket.com/markets
+            params: active=true, closed=false, order=volume, limit=50
+  Fallback: CLOB API — if Gamma fails
+            GET https://clob.polymarket.com/markets
+  Filters:  Skips markets where yes_price ∈ {0.0, 1.0} AND volume == 0
+  Volume range: MIN_VOLUME_USD=$1000 to MAX_VOLUME_USD=$500,000
+  Category inference: _infer_category(question, tags) — keyword-based
+
+KALSHI (kalshi_markets.py):
+  API: demo-api.kalshi.co (KALSHI_DEMO=true) or trading-api.kalshi.com
+  Auth: RSA key pair (KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH)
+        Requires 'cryptography' package — currently missing → RSA header fails
+  Fetches: 385 open markets per refresh
+  Merges: into same tracked_markets list as Polymarket markets (field: source="kalshi")
+
+MARKET WATCHER (market_watcher.py):
+  Maintains live price snapshots via Polymarket WebSocket
+  WS: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  Refresh interval: every 5 minutes (markets.fetch_active_markets)
+  Short-duration priority: markets resolving within 30 days sorted first
+  Currently tracking: 21 niche markets (9 short-duration ≤30d)
+
+  Snapshot fields per market:
+    yes_price, no_price, spread, bid_depth_usd, ask_depth_usd,
+    momentum (5% threshold over 60s window), liquidity_score,
+    estimated_slippage(side, size)
+
+
+────────────────────────────────────────────────────────────────────────────────
+5. CLASSIFICATION (classifier.py)
+────────────────────────────────────────────────────────────────────────────────
+
+Model: llama-3.3-70b-versatile via Groq API (OpenAI-compatible)
+       Fallback: claude-haiku-4-5 via Anthropic (if Groq key missing)
+Temperature: 0.15 (near-deterministic)
+Passes: 3 concurrent LLM calls per (headline, market) pair
+
+Each pass outputs:
+  direction:        YES | NO | NEUTRAL
+  confidence:       float [0, 1] — LLM's stated certainty
+  materiality:      float [0, 1] — how much the news moves the probability
+  novelty_score:    float [0, 1] — how new/unexpected the information is
+  time_sensitivity: "immediate" | "short-term" | "long-term"
+  reasoning:        string explanation
+
+Voting:
+  consistency = fraction of passes that agree on direction
+  Final direction = majority vote
+  Final confidence/materiality/novelty = average across agreeing passes
+
+Rejection conditions:
+  - consistency < 0.6 (passes disagree)
+  - confidence < 0.55 (LLM unsure)
+  - novelty_score < 0.20 (likely already priced in)
+  - direction == NEUTRAL
+
+Novelty cache: recent headlines stored with embeddings for 3600s
+  If new headline cosine similarity > 0.85 with cached headline → low novelty
+
+
+────────────────────────────────────────────────────────────────────────────────
+6. EDGE MODEL (edge_model.py)
+────────────────────────────────────────────────────────────────────────────────
+
+Formula:
+  raw = 0.40 * materiality + 0.30 * confidence + 0.30 * novelty_score
+  room = (0.95 - p_market) if YES else (p_market - 0.05)
+  adjustment = room * (1 - exp(-2 * raw))
+  adjustment = min(adjustment, 0.12)    ← hard cap at 12%
+  p_true = clamp(p_market + sign * adjustment, 0.02, 0.98)
+
+  EV (YES): p_true - p_market
+  EV (NO):  p_market - p_true
+  EV_net = EV - estimated_slippage
+
+Position sizing (capped fractional Kelly):
+  size = min($25, 0.25 * EV_net * confidence * $1000)
+  minimum: $1.00
+
+Rejection conditions from edge model:
+  - EV_net < 0.03
+  - spread > 0.08
+  - liquidity_score < 0.20
+
+
+────────────────────────────────────────────────────────────────────────────────
+7. RISK MANAGEMENT (risk.py)
+────────────────────────────────────────────────────────────────────────────────
+
+All risk state is in-memory (RiskManager singleton). Resets on restart.
+Daily P&L is cross-checked against SQLite every 30s.
+
+GATE 1 — Daily loss cap:
+  Threshold: $100/day
+  Checks: logger.get_daily_pnl() every 30s (cached)
+  Action: blocks ALL trading for the rest of the day
+
+GATE 2 — Max concurrent positions:
+  Threshold: 5 open positions
+  Scope: across all markets and categories
+  Action: rejects new signals until a position closes
+
+GATE 3 — Per-category exposure:
+  Threshold: $60 per category
+  Categories: crypto, politics, economics, weather, sports, science, ai, technology
+  Action: rejects new signals in that category until exposure drops below $60
+
+GATE 4 — Consecutive loss cooldown:
+  Trigger: 3 consecutive losing trades
+  Duration: 30 minutes
+  Action: blocks ALL trading for 30 minutes
+  Reset: reset to 0 after any winning trade
+
+GATE 5 — Slippage guard (in executor):
+  Threshold: estimated_slippage > 3%
+  Action: rejects trade
+
+GATE 6 — Per-market cooldown (in pipeline):
+  Threshold: 600 seconds (10 minutes) between signals on same market
+  Action: skips duplicate signals on same market
+  Scope: in-memory only, resets on restart
+
+GATE 7 — Spread guard (in edge model):
+  Threshold: spread > 8% of mid-price
+  Action: rejects trade before position sizing
+
+GATE 8 — Order book depth (in pipeline):
+  Threshold: bid_depth_usd < $200
+  Action: skips market if too illiquid
+
+
+────────────────────────────────────────────────────────────────────────────────
+8. PAPER TRADING / PORTFOLIO (portfolio.py)
+────────────────────────────────────────────────────────────────────────────────
+
+Virtual balance: $1,000,000 (configurable via PAPER_BALANCE env var)
+Singleton: get_portfolio() — lazy init, restored from SQLite on restart
+
+Position lifecycle:
+  OPEN: portfolio.simulate_trade(signal)
+    - guard: rejects duplicate market_id (same market already open)
+    - contracts = bet_amount / entry_yes_price
+    - balance -= bet_amount
+    - writes to SQLite positions table (status='open')
+
+  MARK-TO-MARKET (unrealized P&L):
+    YES: contracts * (current_price - entry_price)
+    NO:  contracts * (entry_price - current_price)
+    Current price fetched from MarketWatcher snapshot, falls back to entry_price
+
+  CLOSE: portfolio.close_position(market_id, exit_price)
+    YES realized_pnl = contracts * (exit_price - entry_price)
+    NO  realized_pnl = contracts * (entry_price - exit_price)
+    balance += bet_amount + realized_pnl
+    updates SQLite position to status='closed'
+
+Portfolio metrics:
+  total_value = balance + sum(unrealized_pnl for all open positions)
+  total_return_pct = (total_value - initial_balance) / initial_balance * 100
+  win_rate = winning_closed_positions / total_closed_positions
+  sharpe_ratio = (mean_daily_return / std_daily_return) * sqrt(252)
+                 returns None if < 2 data points
+  max_drawdown = max(0, (peak_value - current_value) / peak_value)
+
+Persistence:
+  Open positions loaded from SQLite on startup (survives restart)
+  balance reduced by size_usd for each restored open position
+  Wrapped in try/except — failures don't crash startup
+
+
+────────────────────────────────────────────────────────────────────────────────
+9. DATABASE SCHEMA (logger.py — SQLite WAL)
+────────────────────────────────────────────────────────────────────────────────
+
+TABLE: trades
+  id, market_id, market_question, claude_score, market_price, edge,
+  side, amount_usd, order_id, status, reasoning, headlines, news_source,
+  classification, materiality, news_latency_ms, classification_latency_ms,
+  total_latency_ms, timestamp, category, platform
+
+TABLE: positions
+  id, market_id, market_question, platform, category, side,
+  entry_price, size_usd, contracts, opened_at, closed_at,
+  exit_price, realized_pnl, status ('open'|'closed'|'expired')
+  INDEX: market_id, status
+
+TABLE: news_events
+  id, headline, source, url, published_at, received_at, latency_ms,
+  matched_market_id, nlp_category, nlp_sentiment, nlp_impact
+
+TABLE: calibration
+  id, market_id, market_question, predicted_direction, predicted_confidence,
+  actual_outcome, brier_score, timestamp
+
+Migration: _migrate_v2_columns() adds category and platform columns to trades
+           if they don't exist (ALTER TABLE ADD COLUMN pattern)
+
+
+────────────────────────────────────────────────────────────────────────────────
+10. API ENDPOINTS (api.py — FastAPI on port 8000)
+────────────────────────────────────────────────────────────────────────────────
+
+GET  /status
+  Returns: pipeline uptime, events_processed, signals_generated,
+           tracked_markets, ws_connected, risk state, metrics snapshot
+
+GET  /stats
+  Returns: trades stats (total, win_rate, total_pnl), pipeline metrics
+  ?category=<cat>: filters stats for that category
+
+GET  /markets
+  Returns: list of tracked markets with yes_price, volume, category, source
+  ?category=<cat>: filter by category
+  ?source=<platform>: filter by polymarket|kalshi
+
+GET  /portfolio
+  Returns: balance, initial_balance, total_value, unrealized_pnl, realized_pnl,
+           open_positions[], closed_positions[], win_rate, sharpe_ratio,
+           max_drawdown, total_return_pct, by_category{}
+
+GET  /categories
+  Returns: { available: [all 8 categories], selected: SELECTED_CATEGORIES,
+             counts: { cat: market_count } }
+
+GET  /signals/recent?limit=25
+  Returns: last N trades from SQLite
+
+GET  /sources
+  Returns: health/status of each news source
+
+WebSocket: /ws/signals
+  Pushes signal events to connected dashboard clients in real-time
+  Format: { type:"signal", side, market, market_id, p_market, p_true, ev,
+             bet_usd, status, source, headline, latency_ms, timestamp }
+
+
+────────────────────────────────────────────────────────────────────────────────
+11. CATEGORY SYSTEM (categories.py)
+────────────────────────────────────────────────────────────────────────────────
+
+8 categories, each with: keywords, twitter_keywords, rss_feeds,
+                          newsapi_queries, reddit_subs
+
+  crypto:     Bitcoin, Ethereum, Solana, crypto, DeFi, SEC crypto, ...
+  politics:   election, Trump, Congress, Senate, tariff, White House, ...
+  economics:  inflation, Fed, interest rate, CPI, FOMC, GDP, ...
+  weather:    temperature, storm, hurricane, NOAA, tornado, flood, ...
+  sports:     match, league, score, championship, NBA, NFL, MLB, ...
+  science:    NASA, SpaceX, research, discovery, climate, ...
+  ai:         OpenAI, GPT, Anthropic, Claude, Gemini, LLM, ...
+  technology: Apple, Microsoft, NVIDIA, Google, startup, software, ...
+
+is_relevant_event(event, selected):
+  - selected == ["all"] → always True (no filtering)
+  - checks headline.lower() for any keyword from any selected category
+  - returns True on first match, False if no match
+  - empty selected list → always False
+
+CLI usage:
+  python cli.py watch --categories crypto,politics
+  python cli.py watch --categories weather
+  python cli.py watch   (default: all categories)
+
+Category overrides news sources at startup:
+  RSS feeds, Twitter keywords, NewsAPI queries, Reddit subs all switch
+  to category-specific lists when not ["all"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+12. EXECUTION MODES
+────────────────────────────────────────────────────────────────────────────────
+
+DRY_RUN=true (default — paper trading):
+  → portfolio.simulate_trade(signal)
+  → deducts virtual money, opens position in SQLite
+  → status: "paper"
+  → fallback if portfolio fails: _dry_run_execution() (logs only, no balance)
+
+DRY_RUN=false (live trading):
+  Polymarket: _execute_live() via py_clob_client
+    - Limit orders: price = mid ± spread/2 ± LIMIT_ORDER_OFFSET (0.01)
+    - Order type: GTC (Good Till Cancelled)
+    - Retry: 3 attempts, 1s delay between
+    - Auth: POLYMARKET_PRIVATE_KEY + POLYMARKET_API_KEY
+  Kalshi: execute_kalshi() via kalshi_executor.py
+    - Auth: RSA key (currently broken: 'cryptography' module missing)
+    - Note: KALSHI_DEMO=true → uses demo environment
+
+Trade execution statuses:
+  paper              → virtual portfolio trade (DRY_RUN=true, normal)
+  dry_run            → legacy log-only fallback
+  executed           → live trade filled
+  rejected_slippage  → slippage > 3%
+  rejected_spread    → spread > 8%
+  rejected_daily_limit → daily loss cap hit
+  rejected_max_positions → 5 positions open
+  rejected_category_exposure_<cat> → category at $60 limit
+  rejected_cooldown  → consecutive loss cooldown active
+  error_no_clob_client → py_clob_client not installed
+  error_no_token     → market token ID not found
+  error_order_failed → all 3 retry attempts failed
+
+
+────────────────────────────────────────────────────────────────────────────────
+13. KNOWN CONSTRAINTS & LIMITATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+1. TWITTER: Requires $100/mo Basic tier for filtered stream.
+   Current state: 429 on startup → falls back to RSS only.
+
+2. KALSHI RSA AUTH: 'cryptography' Python package not installed.
+   Effect: Kalshi API calls fail to sign requests.
+   Fix: pip install cryptography
+
+3. NEWSAPI RATE LIMIT: 100 req/day free tier exhausted in ~1 hour
+   at 30s polling intervals. Slows down after limit hit.
+
+4. MARKET FETCH LIMIT: Only top 50 Polymarket markets by volume fetched.
+   Effect: Short-duration / low-volume markets (e.g. 5-minute Bitcoin
+   markets) are NOT discovered — they don't rank in top 50 by volume.
+
+5. NO RUNTIME CATEGORY SWITCHING: Categories set at startup only.
+   Restart required to change categories.
+
+6. RISK STATE RESETS ON RESTART: In-memory only.
+   Daily P&L cross-checked with SQLite but open positions / consecutive
+   losses / cooldown state lost on restart.
+
+7. POSITION AUTO-CLOSE: Positions are never automatically closed.
+   close_position() must be called explicitly (no resolver implemented).
+   Open positions stay open indefinitely until manually resolved.
+
+8. NO 5-MINUTE MARKET SUPPORT: The news-driven pipeline is too slow
+   for 5-minute prediction markets. By the time news arrives → NLP →
+   classify → edge → execute, the market may already be resolved.
+   These markets also don't appear in top-50 volume ranking.
+
+9. GNEWS/REDDIT CATEGORY WIRING: NewsAPISource and RedditSource do NOT
+   use category-specific queries/subreddits even when --categories is set.
+   They use hardcoded QUERIES and AdaptiveSubredditSelector respectively.
+   Only RSS, Twitter keywords are category-aware.
+
+10. TELEGRAM: Disabled — TELEGRAM_CHANNEL_IDS is empty in .env.
+
+11. ANTHROPIC API: No credits. Groq is the active LLM backend.
+    If Groq fails, fallback to Anthropic will also fail.
+
+12. PAPER BALANCE vs BANKROLL: Two separate concepts.
+    BANKROLL_USD=$1000 is used for position SIZING (Kelly formula).
+    PAPER_BALANCE=$1,000,000 is the virtual cash balance.
+    Bet sizes are tiny ($1–$25) because sizing uses $1000 bankroll.
+
+
+────────────────────────────────────────────────────────────────────────────────
+14. EDGE CASES
+────────────────────────────────────────────────────────────────────────────────
+
+1. Same market, duplicate signal within 600s:
+   Per-market cooldown dict in Pipeline._last_signal_time blocks it.
+   In-memory only — resets on restart.
+
+2. Queue depth > 50 events:
+   Pipeline logs a warning. Events are still processed but may lag.
+   No backpressure mechanism — fast sources can overwhelm slow classifiers.
+
+3. Market already moving (momentum > 5%):
+   Microstructure gate skips it. Avoids buying into a market that has
+   already priced in the news signal.
+
+4. News event matches multiple markets:
+   All matches processed in parallel (asyncio.gather).
+   Each is independently classified and risk-checked.
+   Could result in multiple positions opened from one news event.
+
+5. Market price at boundary (near 0 or 1):
+   Edge model room calculation: if p_market=0.92 and direction=YES,
+   room = 0.95 - 0.92 = 0.03 → very small adjustment possible.
+   Prevents betting on nearly-resolved markets.
+
+6. LLM returns inconsistent votes across 3 passes:
+   consistency = agreeing_votes / total_passes
+   If 1/3 agree: consistency=0.33 < 0.6 → rejected.
+   If 2/3 agree: consistency=0.67 ≥ 0.6 → passes.
+
+7. Groq API timeout or rate limit:
+   Classifier wraps in try/except. Logs warning, returns None.
+   Trade is skipped silently for that (market, event) pair.
+
+8. Portfolio simulate_trade called for already-open market:
+   Duplicate guard in Portfolio.simulate_trade returns
+   ExecutionResult(status="rejected_duplicate_position").
+   Prevents double-counting same market.
+
+9. SQLite position restore on startup:
+   If positions table has status='open' rows, they're loaded into memory
+   and balance is reduced. Wrapped in try/except — won't crash on bad data.
+
+10. Missing MarketWatcher snapshot for unrealized P&L:
+    Falls back to entry_price as current_price → unrealized P&L = 0.
+    Doesn't crash, silently returns stale value.
+
+11. NLP processor not loaded (spaCy/VADER unavailable):
+    NLP_ENABLED=false bypasses NLP gate entirely.
+    All events proceed to semantic matching regardless of relevance score.
+
+12. Market has no tokens (no CLOB token IDs):
+    Live execution returns error_no_token. Trade logged, not executed.
+    Does not affect paper trading path.
+
+13. category="all" behavior:
+    is_relevant_event → always True (all events pass)
+    get_twitter_keywords(["all"]) → union of all 8 categories
+    Collection helpers expand "all" to all category keys.
+
+
+────────────────────────────────────────────────────────────────────────────────
+15. CONFIGURATION REFERENCE (.env)
+────────────────────────────────────────────────────────────────────────────────
+
+LLM:
+  GROQ_API_KEY          Primary LLM (free tier, llama-3.3-70b)
+  ANTHROPIC_API_KEY     Fallback LLM (no credits currently)
+
+Markets:
+  POLYMARKET_API_KEY / SECRET / PASSPHRASE / PRIVATE_KEY
+  KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH
+  KALSHI_DEMO=true      Use demo environment
+
+News sources:
+  TWITTER_BEARER_TOKEN  (429s without Basic tier)
+  TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_IDS (empty = disabled)
+  NEWSAPI_KEY           (100 req/day free)
+  GNEWS_API_KEY         (100 req/day free)
+  HF_TOKEN              Suppresses HuggingFace warnings
+
+Pipeline settings:
+  DRY_RUN=true          Paper trading mode
+  MAX_BET_USD=25        Max single bet
+  DAILY_LOSS_LIMIT_USD=100
+  BANKROLL_USD=1000     Used for Kelly sizing (NOT virtual balance)
+  EDGE_THRESHOLD=0.03   Min EV to trade
+  PAPER_BALANCE=1000000 Virtual portfolio starting balance
+  SELECTED_CATEGORIES=all  (or comma-separated: crypto,politics)
+
+Market filters:
+  MAX_VOLUME_USD=500000
+  MIN_VOLUME_USD=1000
+  MATERIALITY_THRESHOLD=0.30
+  SPEED_TARGET_SECONDS=5
+
+Risk controls:
+  MAX_CONCURRENT_POSITIONS=5
+  MAX_EXPOSURE_PER_CATEGORY_USD=60
+  CONSECUTIVE_LOSS_COOLDOWN=3
+  COOLDOWN_MINUTES=30
+
+NLP:
+  NLP_ENABLED=true
+  NLP_MIN_IMPACT=0.10
+
+
+────────────────────────────────────────────────────────────────────────────────
+16. HOW TO RUN
+────────────────────────────────────────────────────────────────────────────────
+
+# Start pipeline (paper trade all categories)
+python cli.py watch
+
+# Start pipeline (specific categories)
+python cli.py watch --categories weather
+python cli.py watch --categories crypto,politics,economics
+
+# Start API server (separate terminal — required for dashboard)
+python api.py
+
+# Start dashboard (separate terminal)
+cd dashboard && npm run dev
+# Open http://localhost:3000
+
+# Check portfolio
+curl http://localhost:8000/portfolio
+
+# Check tracked markets
+curl http://localhost:8000/markets
+
+# Filter by category
+curl "http://localhost:8000/markets?category=crypto"
+
+# Check categories
+curl http://localhost:8000/categories
+
+# View recent trades
+curl "http://localhost:8000/signals/recent?limit=10"
+
+# Backtest
+python cli.py backtest
+
+# Calibration report
+python cli.py calibrate
+
+================================================================================
+END OF SYSTEM DOCUMENTATION
+================================================================================
