@@ -74,10 +74,20 @@ def combine(signals: list[AlphaSignal]) -> AggregatedSignal:
             no_score += w * sig.confidence
         total_weight += w
 
-    direction = "YES" if yes_score >= no_score else "NO"
+    # Determine direction with tie-break fallback
+    if yes_score > no_score:
+        direction = "YES"
+    elif no_score > yes_score:
+        direction = "NO"
+    else:
+        # Tie: fall back to the highest-confidence signal's direction
+        best = max(deduped, key=lambda s: s.confidence)
+        direction = best.direction
 
     # Weighted aggregate confidence and edge (from winning-direction signals only)
     winning_sigs = [s for s in deduped if s.direction == direction]
+    if not winning_sigs:
+        winning_sigs = deduped  # fallback: use all signals
     w_conf  = _weighted_avg(winning_sigs, "confidence")
     w_edge  = _weighted_avg(winning_sigs, "expected_edge")
 
