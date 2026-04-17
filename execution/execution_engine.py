@@ -123,16 +123,10 @@ class ExecutionEngine:
 
     def _get_microstructure(self, market_id: str) -> tuple[float, float]:
         """
-        Get spread and momentum for a market from MarketWatcher snapshots.
-        Returns (spread, momentum) or defaults (0.04, 0.0) if unavailable.
+        Returns (spread, momentum) defaults. In a future iteration, this will
+        integrate with MarketWatcher snapshots via dependency injection.
+        Currently returns conservative defaults: spread=4%, momentum=0.0.
         """
-        try:
-            from market_watcher import MarketWatcher
-            snap = MarketWatcher().get_snapshot(market_id)
-            if snap:
-                return snap.spread, snap.momentum
-        except Exception:
-            pass
         return 0.04, 0.0
 
     def _rejected_result(self, reason: str):
