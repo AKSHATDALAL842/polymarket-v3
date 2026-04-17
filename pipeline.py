@@ -191,6 +191,23 @@ class Pipeline:
 
         news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
         if news_alpha_sig is None:
+            # Still broadcast so the signal feed stays populated
+            broadcaster.broadcast({
+                "type":       "signal",
+                "side":       signal.side,
+                "market":     market.question,
+                "market_id":  market.condition_id,
+                "p_market":   round(signal.p_market, 4),
+                "p_true":     round(signal.p_true, 4),
+                "ev":         round(signal.ev, 4),
+                "bet_usd":    0.0,
+                "status":     "filtered",
+                "source":     signal.news_source,
+                "headline":   signal.headlines[:120],
+                "latency_ms": total_elapsed_ms,
+                "strategies": ["news"],
+                "timestamp":  datetime.now(timezone.utc).isoformat(),
+            })
             return
 
         momentum_sig = self._momentum_alpha.get_signal(market.condition_id)
