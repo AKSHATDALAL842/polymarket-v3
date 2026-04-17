@@ -38,7 +38,7 @@ class TradingMode:
         self._mode = "LIVE" if not config.DRY_RUN else "DRY_RUN"
         self._safety_guard = SafetyGuard()
         self._history: list[dict] = []
-        self._lock = Lock()
+        self._mode_lock = Lock()
 
     @property
     def mode(self) -> str:
@@ -62,7 +62,7 @@ class TradingMode:
         if mode not in _VALID_MODES:
             return {"success": False, "error": f"Invalid mode {mode!r}. Must be LIVE or DRY_RUN."}
 
-        with self._lock:
+        with self._mode_lock:
             if mode == "DRY_RUN":
                 self._apply_mode("DRY_RUN")
                 return {"success": True, "mode": "DRY_RUN"}
