@@ -1177,3 +1177,91 @@ body::after {
   color: var(--txt-mute);
   border-top: 1px dashed var(--border-dim);
 }
+
+/* ── Trading Mode Control ─────────────────────────────────────────── */
+.tm-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tm-confirm-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tm-confirm-label {
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--red);
+  text-transform: uppercase;
+}
+
+.tm-btn {
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border: 1px solid;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: transparent;
+}
+
+.tm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.tm-btn-paper {
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+.tm-btn-paper:hover { background: rgba(34, 197, 94, 0.08); }
+
+.tm-btn-live {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.08);
+  animation: pulse-red 2s ease-in-out infinite;
+}
+
+.tm-btn-confirm-yes {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.tm-btn-confirm-yes:hover { background: rgba(239, 68, 68, 0.08); }
+
+.tm-btn-confirm-no {
+  color: var(--txt-sub);
+  border-color: var(--border);
+}
+.tm-btn-confirm-no:hover { background: var(--bg-hover); }
+
+.tm-live-banner {
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--red);
+  text-transform: uppercase;
+  padding: 2px 6px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.tm-error {
+  font-size: 9px;
+  color: var(--red);
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}

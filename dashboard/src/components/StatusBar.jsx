@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import TradingModeControl from './TradingModeControl.jsx'
 
 function fmtUptime(s) {
   if (!s && s !== 0) return '—'
@@ -20,7 +21,7 @@ function Stat({ label, value, color }) {
   )
 }
 
-export default function StatusBar({ status, connected }) {
+export default function StatusBar({ status, connected, tradingStatus, onModeChange }) {
   const [time, setTime] = useState(new Date())
 
   useEffect(() => {
@@ -51,6 +52,7 @@ export default function StatusBar({ status, connected }) {
       </div>
 
       <div className="sb-right">
+        <TradingModeControl tradingStatus={tradingStatus} onModeChange={onModeChange} />
         <div className={`ws-badge ${connected ? 'live' : 'offline'}`}>
           <span className="ws-dot" />
           {connected ? 'LIVE' : 'OFFLINE'}

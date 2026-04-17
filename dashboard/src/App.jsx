@@ -34,6 +34,7 @@ export default function App() {
   const { data: marketsData } = usePolling(`${API}/markets`,        30000)
   const { data: sourcesData } = usePolling(`${API}/sources`,        10000)
   const { data: tradesData  } = usePolling(`${API}/signals/recent?limit=25`, 10000)
+  const { data: tradingStatusData } = usePolling(`${API}/trading/status`, 5000)
 
   // Portfolio settings (user-editable, local only)
   const [portfolio, setPortfolio] = useState({ capital: 1000, maxBet: 25, riskFactor: 0.25 })
@@ -62,7 +63,7 @@ export default function App() {
 
   return (
     <div className="app-wrap">
-      <StatusBar status={status} connected={connected} />
+      <StatusBar status={status} connected={connected} tradingStatus={tradingStatusData} onModeChange={() => {}} />
 
       {/* ── Tab bar ── */}
       <div className="tabs">
