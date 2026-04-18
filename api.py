@@ -59,8 +59,9 @@ async def lifespan(app):
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
     from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
     import uvicorn
 except ImportError:
     raise ImportError(
@@ -75,6 +76,7 @@ app = FastAPI(
 )
 
 from fastapi.middleware.cors import CORSMiddleware
+from control.trading_mode import TradingMode
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -334,6 +336,43 @@ async def _ws_ping(websocket: WebSocket):
             await websocket.send_text(json.dumps({"type": "ping"}))
         except Exception:
             break
+
+
+# ── Trading Mode Control ─────────────────────────────────────────────────────
+
+class TradingModeRequest(BaseModel):
+    mode: str       # "LIVE" | "DRY_RUN"
+    confirm: bool = False
+
+
+@app.post("/trading/mode")
+async def set_trading_mode(request: TradingModeRequest):
+    """
+    Switch between paper trading (DRY_RUN) and live trading (LIVE).
+
+    To enable live trading:
+        POST /trading/mode {"mode": "LIVE", "confirm": true}
+
+    Safety checks are enforced — will reject if drawdown > 20% or in cooldown.
+    Switching back to DRY_RUN never requires confirmation.
+    """
+    result = TradingMode.instance().set_mode(request.mode, confirm=request.confirm)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/trading/status")
+async def get_trading_status():
+    """
+    Return current trading mode and recent switch history.
+    """
+    tm = TradingMode.instance()
+    return {
+        "mode":    tm.mode,
+        "is_live": tm.is_live,
+        "history": tm.get_history()[-10:],   # last 10 switches
+    }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

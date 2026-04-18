@@ -38,7 +38,7 @@ class ExecutionResult:
 
     @property
     def success(self) -> bool:
-        return self.status in ("executed", "dry_run")
+        return self.status in ("executed", "dry_run", "paper")
 
 
 # ── Pre-flight checks ──────────────────────────────────────────────────────────
