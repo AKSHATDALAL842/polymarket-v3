@@ -51,17 +51,15 @@ _LOW_SIGNAL_PHRASES = {
 
 DB_PATH = Path(__file__).parent / "trades.db"
 
-
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+# Module-level persistent connection — avoids re-opening on every record call.
+# WAL mode is set once at startup; the connection is reused for the process lifetime.
+_db: sqlite3.Connection = sqlite3.connect(DB_PATH, check_same_thread=False)
+_db.row_factory = sqlite3.Row
+_db.execute("PRAGMA journal_mode=WAL")
 
 
 def _ensure_table():
-    conn = _conn()
-    conn.execute("""
+    _db.execute("""
         CREATE TABLE IF NOT EXISTS subreddit_stats (
             subreddit TEXT PRIMARY KEY,
             base_weight REAL NOT NULL DEFAULT 0.10,
@@ -75,13 +73,12 @@ def _ensure_table():
     """)
     # Seed rows for all known subreddits
     for sub, w in BASE_WEIGHTS.items():
-        conn.execute(
+        _db.execute(
             """INSERT OR IGNORE INTO subreddit_stats (subreddit, base_weight, current_weight)
                VALUES (?, ?, ?)""",
             (sub, w, w),
         )
-    conn.commit()
-    conn.close()
+    _db.commit()
 
 
 _ensure_table()
@@ -124,11 +121,9 @@ class AdaptiveSubredditSelector:
         self._refresh_weights()
 
     def _refresh_weights(self):
-        conn = _conn()
-        rows = conn.execute(
+        rows = _db.execute(
             "SELECT subreddit, current_weight FROM subreddit_stats"
         ).fetchall()
-        conn.close()
         if rows:
             self._weights = {r["subreddit"]: max(r["current_weight"], 0.001) for r in rows}
         else:
@@ -140,46 +135,39 @@ class AdaptiveSubredditSelector:
         return random.choices(subs, weights=weights, k=1)[0]
 
     def record_post_seen(self, subreddit: str):
-        conn = _conn()
-        conn.execute(
+        _db.execute(
             """UPDATE subreddit_stats
                SET posts_seen = posts_seen + 1,
                    last_updated = datetime('now')
                WHERE subreddit = ?""",
             (subreddit,),
         )
-        conn.commit()
-        conn.close()
+        _db.commit()
 
     def record_trade_triggered(self, subreddit: str):
-        conn = _conn()
-        conn.execute(
+        _db.execute(
             """UPDATE subreddit_stats
                SET trades_triggered = trades_triggered + 1,
                    last_updated = datetime('now')
                WHERE subreddit = ?""",
             (subreddit,),
         )
-        conn.commit()
-        conn.close()
+        _db.commit()
 
     def record_profitable_trade(self, subreddit: str):
-        conn = _conn()
-        conn.execute(
+        _db.execute(
             """UPDATE subreddit_stats
                SET profitable_trades = profitable_trades + 1,
                    last_updated = datetime('now')
                WHERE subreddit = ?""",
             (subreddit,),
         )
-        conn.commit()
-        conn.close()
+        _db.commit()
         self._update_weights()
 
     def _update_weights(self):
         """Recompute alpha scores and current weights, then normalize."""
-        conn = _conn()
-        rows = conn.execute(
+        rows = _db.execute(
             "SELECT subreddit, base_weight, trades_triggered, profitable_trades FROM subreddit_stats"
         ).fetchall()
 
@@ -194,26 +182,23 @@ class AdaptiveSubredditSelector:
         normalized = [(a, w / total, sub) for a, w, sub in updates]
 
         for alpha, weight, sub in normalized:
-            conn.execute(
+            _db.execute(
                 """UPDATE subreddit_stats
                    SET alpha_score = ?, current_weight = ?, last_updated = datetime('now')
                    WHERE subreddit = ?""",
                 (alpha, weight, sub),
             )
 
-        conn.commit()
-        conn.close()
+        _db.commit()
         self._refresh_weights()
         log.debug("[reddit] Weights updated: %s", {s: round(w, 3) for s, w in self._weights.items()})
 
 
 def get_subreddit_stats() -> list[dict]:
     """Return current stats for all tracked subreddits (for CLI display)."""
-    conn = _conn()
-    rows = conn.execute(
+    rows = _db.execute(
         """SELECT subreddit, base_weight, posts_seen, trades_triggered,
                   profitable_trades, alpha_score, current_weight, last_updated
            FROM subreddit_stats ORDER BY current_weight DESC"""
     ).fetchall()
-    conn.close()
     return [dict(r) for r in rows]

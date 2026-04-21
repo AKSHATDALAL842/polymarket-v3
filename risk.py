@@ -92,7 +92,51 @@ class RiskManager:
 
     # ── State updates ───────────────────────────────────────────────────────────
 
+    def check_and_open(
+        self, condition_id: str, category: str, amount_usd: float
+    ) -> bool:
+        """
+        Atomically check all risk gates and, if approved, record the open position.
+
+        Returns True if the position was opened, False if any gate rejected it.
+        Holds _state_lock for the entire duration so two concurrent tasks cannot
+        both pass the checks and both record positions, which would exceed limits.
+        """
+        with self._state_lock:
+            # Daily P&L check (uses cached value — safe to read under lock)
+            loss = min(0.0, self._daily_pnl_cache)
+            if abs(loss) >= config.DAILY_LOSS_LIMIT_USD:
+                log.warning(f"[risk] Daily loss cap hit: ${abs(loss):.2f}")
+                return False
+
+            # Position count check
+            if len(self._open_positions) >= config.MAX_CONCURRENT_POSITIONS:
+                log.debug(f"[risk] Max concurrent positions reached")
+                return False
+
+            # Category exposure check
+            current_exposure = self._category_exposure.get(category, 0.0)
+            if current_exposure + amount_usd > config.MAX_EXPOSURE_PER_CATEGORY_USD:
+                log.debug(f"[risk] Category exposure limit: {category}")
+                return False
+
+            # Cooldown check
+            if time.monotonic() < self._cooldown_until:
+                log.debug(f"[risk] In cooldown")
+                return False
+
+            # All checks passed — record atomically
+            self._open_positions[condition_id] = amount_usd
+            self._category_exposure[category] = current_exposure + amount_usd
+
+        log.debug(
+            f"[risk] Position opened: {condition_id[:12]} ${amount_usd:.2f} "
+            f"category={category} open={len(self._open_positions)}"
+        )
+        return True
+
     def on_trade_opened(self, condition_id: str, category: str, amount_usd: float):
+        """Non-atomic open — kept for callers that have already checked externally."""
         with self._state_lock:
             self._open_positions[condition_id] = amount_usd
             self._category_exposure[category] = self._category_exposure.get(category, 0.0) + amount_usd

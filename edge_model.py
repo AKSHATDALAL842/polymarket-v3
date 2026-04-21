@@ -218,17 +218,22 @@ def detect_edge_v2(
     news_event=None,
 ) -> Signal | None:
     """Backwards-compatible wrapper: accepts V2 Classification objects too."""
-    # If old-style dataclass with "direction"/"materiality" but no confidence etc.
     from classifier import Classification as NewClassification
     if not isinstance(classification, NewClassification):
-        # Shim: wrap old classification
+        # Shim for old-style V2 classification objects that used "bullish"/"bearish".
+        # confidence=0.65: minimum passing value (MIN_CONFIDENCE=0.55) with small margin.
+        # novelty_score=0.6: neutral-positive prior; old classifier had no novelty concept.
+        # These are conservative defaults chosen to let only high-materiality V2 signals
+        # through the edge threshold. Remove this shim once all callers use V3 Classification.
+        _V2_SHIM_CONFIDENCE = 0.65
+        _V2_SHIM_NOVELTY    = 0.60
         direction_map = {"bullish": "YES", "bearish": "NO", "neutral": "NEUTRAL"}
         direction = direction_map.get(getattr(classification, "direction", "neutral"), "NEUTRAL")
         cls_obj = NewClassification(
             direction=direction,
-            confidence=0.65,
+            confidence=_V2_SHIM_CONFIDENCE,
             materiality=getattr(classification, "materiality", 0.5),
-            novelty_score=0.6,
+            novelty_score=_V2_SHIM_NOVELTY,
             time_sensitivity="short-term",
             reasoning=getattr(classification, "reasoning", ""),
             consistency=1.0,
