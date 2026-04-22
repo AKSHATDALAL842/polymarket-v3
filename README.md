@@ -12,48 +12,48 @@ Event-driven trading system for binary prediction markets. Ingests breaking news
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  NEWS INGEST   news_stream.py                                     │
-│  Twitter API v2 / Telegram / RSS / NewsAPI / Reddit /            │
-│  GNews / GDELT  (7 sources, async, concurrent)                   │
+│  NEWS INGEST   news_stream.py                                   │
+│  Twitter API v2 / Telegram / RSS / NewsAPI / Reddit /           │
+│  GNews / GDELT  (7 sources, async, concurrent)                  │
 └────────────────────────────┬────────────────────────────────────┘
                              │ NewsEvent
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  NLP ENRICHMENT   nlp_processor.py                               │
+│  NLP ENRICHMENT   nlp_processor.py                              │
 │  Named entity recognition (spaCy), VADER sentiment,             │
 │  composite impact score, exponential temporal decay             │
-│  relevance(t) = impact × exp(−0.05 × age_minutes)              │
+│  relevance(t) = impact × exp(−0.05 × age_minutes)               │
 └────────────────────────────┬────────────────────────────────────┘
                              │ enriched event
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  MARKET MAPPING   matcher.py                                      │
+│  MARKET MAPPING   matcher.py                                    │
 │  sentence-transformers embeddings (all-MiniLM-L6-v2, 384-dim)   │
-│  cosine similarity → top-k markets above threshold               │
+│  cosine similarity → top-k markets above threshold              │
 │  short-duration markets prioritized (≤30 days to resolution)    │
 └────────────────────────────┬────────────────────────────────────┘
                              │ MarketMatch[]
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  EVENT INTELLIGENCE   classifier.py                              │
+│  EVENT INTELLIGENCE   classifier.py                             │
 │  3 concurrent LLM passes (llama-3.3-70b via Groq, temp=0.15)    │
-│  outputs: direction / confidence / materiality /                 │
-│           novelty_score / time_sensitivity / consistency          │
+│  outputs: direction / confidence / materiality /                │
+│           novelty_score / time_sensitivity / consistency        │
 │  rejects: consistency < 0.6, confidence < 0.55, novelty < 0.20  │
 └────────────────────────────┬────────────────────────────────────┘
                              │ Classification
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  MICROSTRUCTURE   market_watcher.py                              │
+│  MICROSTRUCTURE   market_watcher.py                             │
 │  WebSocket price feed → momentum gate (skip if already moving)  │
 │  CLOB REST → order book depth, spread, liquidity score          │
-│  estimated slippage per side + size                              │
+│  estimated slippage per side + size                             │
 └────────────────────────────┬────────────────────────────────────┘
                              │ OrderBookSnapshot
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  EDGE MODEL   edge_model.py                                       │
-│  p_true = p_market + f(direction, materiality, novelty, conf)    │
+│  EDGE MODEL   edge_model.py                                     │
+│  p_true = p_market + f(direction, materiality, novelty, conf)   │
 │  sigmoid-dampened, asymmetric boundary correction               │
 │  EV_net = |p_true − p_market| − slippage                        │
 │  size = min(MAX_BET, K × EV × confidence × bankroll)            │
@@ -61,27 +61,27 @@ Event-driven trading system for binary prediction markets. Ingests breaking news
                              │ Signal
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  RISK LAYER   risk.py                                             │
-│  daily loss cap / max concurrent positions /                     │
-│  per-category exposure / consecutive loss cooldown               │
-│  per-market 10-min signal cooldown                               │
+│  RISK LAYER   risk.py                                           │
+│  daily loss cap / max concurrent positions /                    │
+│  per-category exposure / consecutive loss cooldown              │
+│  per-market 10-min signal cooldown                              │
 └────────────────────────────┬────────────────────────────────────┘
                              │ approved Signal
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  EXECUTION   executor.py                                          │
+│  EXECUTION   executor.py                                        │
 │  limit orders at mid ± offset (avoid crossing spread)           │
-│  slippage gate, retry logic (3 attempts), partial fill handling  │
-│  full latency tracking: event → classification → execution       │
+│  slippage gate, retry logic (3 attempts), partial fill handling │
+│  full latency tracking: event → classification → execution      │
 └────────────────────────────┬────────────────────────────────────┘
                              │ ExecutionResult
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  OBSERVABILITY                                                    │
+│  OBSERVABILITY                                                  │
 │  logger.py      — SQLite WAL (trades, news, calibration)        │
-│  calibrator.py  — predicted vs actual, Brier score, ECE          │
-│  metrics.py     — rolling Sharpe, drawdown, latency p50/p95/p99  │
-│  api.py         — FastAPI + WebSocket real-time signal feed      │
+│  calibrator.py  — predicted vs actual, Brier score, ECE         │
+│  metrics.py     — rolling Sharpe, drawdown, latency p50/p95/p99 │
+│  api.py         — FastAPI + WebSocket real-time signal feed     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
