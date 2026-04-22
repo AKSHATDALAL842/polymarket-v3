@@ -1,8 +1,3 @@
-"""
-Real-time news monitor — event-driven architecture.
-Sources: Twitter API v2 filtered stream, Telegram channels, RSS fallback.
-Emits NewsEvent objects into an asyncio queue as breaking news arrives.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -23,20 +18,19 @@ log = logging.getLogger(__name__)
 @dataclass
 class NewsEvent:
     headline: str
-    source: str  # "twitter", "telegram", "rss"
+    source: str
     url: str
     received_at: datetime
     published_at: datetime
     summary: str = ""
     raw_data: dict = field(default_factory=dict)
-    latency_ms: int = 0  # time from publication to our receipt
+    latency_ms: int = 0
 
     def age_seconds(self) -> float:
         return (datetime.now(timezone.utc) - self.received_at).total_seconds()
 
 
 class TwitterStream:
-    """Twitter API v2 filtered stream for real-time keyword monitoring."""
 
     def __init__(self, bearer_token: str, keywords: list[str]):
         self.bearer_token = bearer_token
@@ -48,12 +42,10 @@ class TwitterStream:
         return {"Authorization": f"Bearer {self.bearer_token}"}
 
     async def setup_rules(self):
-        """Set up filtered stream rules based on keywords."""
         if not self.enabled:
             return
 
         async with httpx.AsyncClient() as client:
-            # Get existing rules
             resp = await client.get(
                 f"{self.base_url}/tweets/search/stream/rules",
                 headers=self._headers(),
@@ -61,7 +53,6 @@ class TwitterStream:
             )
             existing = resp.json().get("data", [])
 
-            # Delete existing rules
             if existing:
                 ids = [r["id"] for r in existing]
                 await client.post(
@@ -71,9 +62,7 @@ class TwitterStream:
                     timeout=10,
                 )
 
-            # Create new rules from keywords (max 25 chars per rule for Basic)
             rules = []
-            # Batch keywords into OR groups
             batch_size = 5
             for i in range(0, len(self.keywords), batch_size):
                 batch = self.keywords[i:i + batch_size]
@@ -89,7 +78,6 @@ class TwitterStream:
                 )
 
     async def stream(self, queue: asyncio.Queue):
-        """Connect to filtered stream and emit NewsEvents."""
         if not self.enabled:
             log.info("[twitter] No bearer token — stream disabled")
             return
@@ -161,7 +149,6 @@ class TwitterStream:
 
 
 class TelegramMonitor:
-    """Monitor Telegram channels via Bot API long polling."""
 
     def __init__(self, bot_token: str, channel_ids: list[str]):
         self.bot_token = bot_token
@@ -170,7 +157,6 @@ class TelegramMonitor:
         self.last_update_id = 0
 
     async def stream(self, queue: asyncio.Queue):
-        """Poll for new messages and emit NewsEvents."""
         if not self.enabled:
             log.info("[telegram] No bot token or channels — monitor disabled")
             return
@@ -218,11 +204,6 @@ class TelegramMonitor:
 
 
 class NewsAPISource:
-    """
-    NewsAPI.org polling — free tier gives 100 req/day.
-    Polls /v2/everything every 30s across all keyword groups.
-    Covers breaking news 2-3 minutes after publication.
-    """
 
     BASE_URL = "https://newsapi.org/v2/everything"
     QUERIES = [
@@ -295,7 +276,6 @@ class NewsAPISource:
                             pub = now
                         latency = int((now - pub).total_seconds() * 1000)
 
-                        # Skip stale articles (>30 min old)
                         if latency > 1800000:
                             continue
 
@@ -323,11 +303,6 @@ class NewsAPISource:
 
 
 class RedditSource:
-    """
-    Reddit JSON API — no key required.
-    Uses AdaptiveSubredditSelector for alpha-weighted, performance-adaptive sampling.
-    Filters posts with is_high_signal() before emitting to pipeline.
-    """
 
     def __init__(self, interval_seconds: float = 45):
         self.interval = interval_seconds
@@ -378,11 +353,9 @@ class RedditSource:
                         pub = datetime.fromtimestamp(created_utc, tz=timezone.utc)
                         latency = int((now - pub).total_seconds() * 1000)
 
-                        # Skip posts older than 20 minutes
                         if latency > 1200000:
                             continue
 
-                        # Filter: only pass high-signal posts
                         if not self._is_high_signal(title):
                             filtered_count += 1
                             continue
@@ -413,11 +386,6 @@ class RedditSource:
 
 
 class GNewsSource:
-    """
-    GNews API (gnews.io) — structured news with clean metadata.
-    Free tier: 100 requests/day → poll every 15 min, 6 topic groups.
-    Each request returns up to 10 articles.
-    """
 
     BASE_URL = "https://gnews.io/api/v4"
     TOPICS = [
@@ -496,7 +464,7 @@ class GNewsSource:
                         pub = now
                     latency = int((now - pub).total_seconds() * 1000)
 
-                    if latency > 3600000:   # skip if >1h old
+                    if latency > 3600000:
                         continue
 
                     new_count += 1
@@ -525,11 +493,6 @@ class GNewsSource:
 
 
 class GDELTSource:
-    """
-    GDELT Project DOC 2.0 API — structured global event data.
-    Free, no key required. Rich geopolitical + macro coverage.
-    Polls multiple queries every 5 minutes.
-    """
 
     BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
     QUERIES = [
@@ -596,7 +559,7 @@ class GDELTSource:
                         pub = now
                     latency = int((now - pub).total_seconds() * 1000)
 
-                    if latency > 1800000:   # skip if >30 min old
+                    if latency > 1800000:
                         continue
 
                     new_count += 1
@@ -625,7 +588,6 @@ class GDELTSource:
 
 
 class RSSFallback:
-    """Periodic RSS scraping as a fallback news source."""
 
     def __init__(self, interval_seconds: float = 120, feeds=None):
         self.interval = interval_seconds
@@ -633,7 +595,6 @@ class RSSFallback:
         self._seen_headlines: set[str] = set()
 
     async def stream(self, queue: asyncio.Queue):
-        """Poll RSS feeds periodically and emit new headlines."""
         while True:
             try:
                 items = await asyncio.get_event_loop().run_in_executor(
@@ -665,7 +626,6 @@ class RSSFallback:
                 if new_count:
                     log.info(f"[rss] {new_count} new headlines")
 
-                # Trim seen cache
                 if len(self._seen_headlines) > 5000:
                     self._seen_headlines = set(list(self._seen_headlines)[-2000:])
 
@@ -676,7 +636,6 @@ class RSSFallback:
 
 
 class NewsAggregator:
-    """Runs all news sources concurrently, deduplicates, emits to output queue."""
 
     def __init__(self, output_queue: asyncio.Queue, categories=None):
         from categories import (
@@ -692,8 +651,8 @@ class NewsAggregator:
         else:
             _twitter_keywords = config.TWITTER_KEYWORDS
             _rss_feeds = config.RSS_FEEDS
-            _newsapi_queries = None   # use source defaults
-            _reddit_subs = None       # use source defaults
+            _newsapi_queries = None
+            _reddit_subs = None
 
         self.output_queue = output_queue
         self._internal_queue: asyncio.Queue = asyncio.Queue()
@@ -702,11 +661,7 @@ class NewsAggregator:
         self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, _twitter_keywords)
         self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
         self.rss = RSSFallback(interval_seconds=60, feeds=_rss_feeds)
-        # NewsAPISource does not accept a queries param; it uses a hardcoded QUERIES class attribute.
-        # Category-specific newsapi queries are not wired into NewsAPISource (out of scope).
         self.newsapi = NewsAPISource(config.NEWSAPI_KEY, interval_seconds=30)
-        # RedditSource does not accept a subs param; it uses AdaptiveSubredditSelector internally.
-        # Category-specific subreddits are not wired into RedditSource (out of scope).
         self.reddit = RedditSource(interval_seconds=45)
         self.gnews = GNewsSource(config.GNEWS_API_KEY, interval_seconds=900)
         self.gdelt = GDELTSource(interval_seconds=300)
@@ -718,7 +673,6 @@ class NewsAggregator:
         }
 
     async def run(self):
-        """Start all sources and the dedup router."""
         await asyncio.gather(
             self.twitter.stream(self._internal_queue),
             self.telegram.stream(self._internal_queue),
@@ -732,7 +686,6 @@ class NewsAggregator:
         )
 
     async def _dedup_router(self):
-        """Deduplicate and forward events to output queue."""
         while True:
             event = await self._internal_queue.get()
             key = event.headline.lower()[:80]

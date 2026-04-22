@@ -1,7 +1,3 @@
-"""
-Event-Driven Pipeline Orchestrator — V3
-(Multi-strategy edition: news + momentum alpha, PortfolioManager routing)
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +23,7 @@ log = logging.getLogger(__name__)
 
 
 class Pipeline:
+
     def __init__(self, dry_run: bool | None = None):
         self.dry_run = dry_run if dry_run is not None else config.DRY_RUN
         self.watcher = MarketWatcher()
@@ -38,7 +35,6 @@ class Pipeline:
         self._signal_count = 0
         self._start_time: Optional[float] = None
         self._last_signal_time: dict[str, float] = {}
-        # Alpha layer
         self._momentum_alpha = MomentumAlpha()
         self._news_alpha = NewsAlpha()
 
@@ -56,7 +52,7 @@ class Pipeline:
             self.watcher.run(),
             self._news_aggregator.run(),
             self._consume_news_queue(),
-            self._momentum_alpha.run(self.watcher),   # NEW: background momentum monitor
+            self._momentum_alpha.run(self.watcher),
             return_exceptions=True,
         )
         for r in results:
@@ -133,23 +129,36 @@ class Pipeline:
         elapsed = int((time.monotonic() - t0) * 1000)
         log.debug(f"[pipeline] Event processed in {elapsed}ms")
 
-    async def _process_market(self, event, market, similarity, news_latency_ms, t0):
+    async def _process_market(
+        self,
+        event: NewsEvent,
+        market,
+        similarity: float,
+        news_latency_ms: int,
+        t0: float,
+    ):
         last = self._last_signal_time.get(market.condition_id, 0.0)
         if time.monotonic() - last < config.MARKET_SIGNAL_COOLDOWN_SECONDS:
             log.debug(f"[pipeline] Market cooldown active: {market.question[:50]}")
             return
 
         cls_start = time.monotonic()
-        classification = await classify_async(
-            headline=event.headline, market=market, source=event.source,
+        classification, ob = await asyncio.gather(
+            classify_async(headline=event.headline, market=market, source=event.source),
+            self.watcher.fetch_order_book(market),
         )
         cls_latency_ms = int((time.monotonic() - cls_start) * 1000)
+
+        log.debug(
+            f"[pipeline] classify done in {cls_latency_ms}ms: "
+            f"dir={classification.direction} actionable={classification.is_actionable} "
+            f"'{market.question[:40]}'"
+        )
 
         if not classification.is_actionable:
             log.debug(f"[pipeline] Not actionable: {market.question[:50]}")
             return
 
-        ob = await self.watcher.fetch_order_book(market)
         snap = self.watcher.get_snapshot(market.condition_id)
 
         if snap and snap.is_moving:
@@ -185,13 +194,11 @@ class Pipeline:
 
         self._signal_count += 1
 
-        # ── Alpha layer routing ──────────────────────────────────────────────
         from alpha.ensemble import combine
         from portfolio.portfolio_manager import PortfolioManager
 
         news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
         if news_alpha_sig is None:
-            # Still broadcast so the signal feed stays populated
             broadcaster.broadcast({
                 "type":       "signal",
                 "side":       signal.side,
@@ -217,7 +224,6 @@ class Pipeline:
 
         aggregated = combine(all_alpha_sigs)
         result = await PortfolioManager.instance().process_signal_async(aggregated)
-        # ── End alpha layer routing ──────────────────────────────────────────
 
         if result.success and result.filled_size > 0:
             self.risk.on_trade_opened(

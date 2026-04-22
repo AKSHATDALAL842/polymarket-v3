@@ -1,12 +1,3 @@
-"""
-Event Intelligence Layer — multi-pass LLM classification with consistency scoring.
-
-Replaces single-shot direction label with structured probabilistic output:
-  direction, confidence, materiality, novelty_score, time_sensitivity, reasoning
-
-Uses 3 independent LLM passes and aggregates to produce a stability-weighted result.
-Rejects classification when pass agreement is below threshold.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -21,11 +12,9 @@ from markets import Market
 
 log = logging.getLogger(__name__)
 
-# Lazy client — instantiated on first use
 _client = None
 
-# Semaphore: limit concurrent Groq API calls to stay within free tier (30 RPM)
-# 3 passes × max 3 concurrent events = 9 in-flight at once — well within limits
+# 3 passes × max 3 concurrent events = 9 in-flight; well within Groq free tier (30 RPM)
 _groq_semaphore = asyncio.Semaphore(9)
 
 
@@ -48,8 +37,6 @@ def _get_client():
 
     return _client
 
-
-# ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _PROMPT = """\
 You are a quantitative news analyst for prediction markets. Your job is to determine how a news event should move a market price.
@@ -89,11 +76,9 @@ Field definitions:
 """
 
 
-# ── Data classes ───────────────────────────────────────────────────────────────
-
 @dataclass
 class ClassificationPass:
-    direction: str         # "YES", "NO", "NEUTRAL"
+    direction: str
     confidence: float
     materiality: float
     novelty_score: float
@@ -105,21 +90,19 @@ class ClassificationPass:
 
 @dataclass
 class Classification:
-    """Aggregated result from multi-pass voting."""
-    direction: str              # majority vote
-    confidence: float           # mean of agreeing passes
-    materiality: float          # mean across passes
-    novelty_score: float        # mean across passes
-    time_sensitivity: str       # most common vote
-    reasoning: str              # from highest-confidence pass
-    consistency: float          # fraction of passes that agreed on direction
+    direction: str
+    confidence: float
+    materiality: float
+    novelty_score: float
+    time_sensitivity: str
+    reasoning: str
+    consistency: float
     passes: list[ClassificationPass] = field(default_factory=list)
     total_latency_ms: int = 0
     model: str = ""
 
     @property
     def is_actionable(self) -> bool:
-        """True when all quality gates pass."""
         return (
             self.direction != "NEUTRAL"
             and self.confidence >= config.MIN_CONFIDENCE
@@ -134,8 +117,6 @@ class Classification:
         mapping = {"YES": "bullish", "NO": "bearish", "NEUTRAL": "neutral"}
         return mapping.get(self.direction, "neutral")
 
-
-# ── Single pass ────────────────────────────────────────────────────────────────
 
 async def _single_pass(
     client,
@@ -171,7 +152,6 @@ async def _single_pass(
                 )
                 raw = response.content[0].text.strip()
 
-        # Strip markdown fences if present
         if "```" in raw:
             parts = raw.split("```")
             raw = parts[1] if len(parts) > 1 else raw
@@ -215,23 +195,16 @@ async def _single_pass(
         )
 
 
-# ── Multi-pass aggregation ─────────────────────────────────────────────────────
-
 async def classify_async(
     headline: str,
     market: Market,
     source: str = "unknown",
     n_passes: int | None = None,
 ) -> Classification:
-    """
-    Run N independent classification passes concurrently, then aggregate.
-    Returns a Classification with consistency score and majority direction.
-    """
     n = n_passes or config.CLASSIFICATION_PASSES
     client = _get_client()
     wall_start = time.monotonic()
 
-    # Fan out passes concurrently
     tasks = [_single_pass(client, headline, market, source) for _ in range(n)]
     passes = await asyncio.gather(*tasks, return_exceptions=False)
 
@@ -250,22 +223,18 @@ async def classify_async(
             model=config.CLASSIFICATION_MODEL,
         )
 
-    # Majority vote on direction
     direction_counts = Counter(p.direction for p in valid)
     majority_direction, majority_count = direction_counts.most_common(1)[0]
     consistency = majority_count / len(valid)
 
-    # Aggregate metrics from agreeing passes only (reduces noise from outlier passes)
     agreeing = [p for p in valid if p.direction == majority_direction]
     mean_confidence = sum(p.confidence for p in agreeing) / len(agreeing)
     mean_materiality = sum(p.materiality for p in valid) / len(valid)
     mean_novelty = sum(p.novelty_score for p in valid) / len(valid)
 
-    # Time sensitivity: most common among agreeing passes
     ts_counts = Counter(p.time_sensitivity for p in agreeing)
     best_ts = ts_counts.most_common(1)[0][0]
 
-    # Reasoning: from the highest-confidence agreeing pass
     best_pass = max(agreeing, key=lambda p: p.confidence)
     reasoning = best_pass.reasoning
 
@@ -297,21 +266,16 @@ def classify(
     market: Market,
     source: str = "unknown",
 ) -> Classification:
-    """Synchronous wrapper for use in backtest / CLI contexts."""
     try:
         loop = asyncio.get_running_loop()
-        # Already inside a running loop — schedule on it
         import concurrent.futures
         future = asyncio.run_coroutine_threadsafe(
             classify_async(headline, market, source), loop
         )
         return future.result(timeout=30)
     except RuntimeError:
-        # No running loop — create a fresh one
         return asyncio.run(classify_async(headline, market, source))
 
-
-# ── Self-test ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import asyncio

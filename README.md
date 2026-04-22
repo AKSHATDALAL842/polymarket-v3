@@ -1,8 +1,10 @@
-# Polymarket V3 — Quant-Grade Event-Driven Trading System
+# Polymarket Signal Pipeline
 
-An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket.com) prediction markets. Ingests news from 7 sources, semantically matches headlines to markets, runs multi-pass LLM classification, estimates edge, applies microstructure and risk filters, and executes limit orders — all within a 5-second target latency.
+Event-driven trading system for binary prediction markets. Ingests breaking news from 7 concurrent sources, routes events to semantically-matched markets, runs 3-pass LLM voting to score market impact, applies a signal-weighted edge model against live CLOB quotes, and executes limit orders — all within a 5-second latency target.
 
-> **Status:** Dry-run mode (`DRY_RUN=true`). All trades are simulated. Live trading requires a funded Polymarket account and setting `DRY_RUN=false`.
+**Status:** Dry-run mode by default (`DRY_RUN=true`). Live trading requires a funded Polymarket account.
+
+**Stack:** Python 3.11 · asyncio · Groq (llama-3.3-70b) · sentence-transformers · FastAPI · SQLite · Polymarket CLOB
 
 ---
 
@@ -12,16 +14,17 @@ An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket
 ┌─────────────────────────────────────────────────────────────────┐
 │  NEWS INGEST   news_stream.py                                     │
 │  Twitter API v2 / Telegram / RSS / NewsAPI / Reddit /            │
-│  GNews / GDELT  (7 sources, async, <1s latency)                  │
+│  GNews / GDELT  (7 sources, async, concurrent)                   │
 └────────────────────────────┬────────────────────────────────────┘
                              │ NewsEvent
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  NLP ENRICHMENT   nlp_processor.py                               │
-│  Named entity recognition, sentiment, impact score,             │
-│  temporal decay — drops low-relevance events early              │
+│  Named entity recognition (spaCy), VADER sentiment,             │
+│  composite impact score, exponential temporal decay             │
+│  relevance(t) = impact × exp(−0.05 × age_minutes)              │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ enriched NewsEvent
+                             │ enriched event
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  MARKET MAPPING   matcher.py                                      │
@@ -51,9 +54,9 @@ An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket
 ┌─────────────────────────────────────────────────────────────────┐
 │  EDGE MODEL   edge_model.py                                       │
 │  p_true = p_market + f(direction, materiality, novelty, conf)    │
-│  EV_net = |p_true - p_market| - slippage                        │
-│  price adjustment capped at 12% (prevents LLM overconfidence)   │
-│  size = min(MAX_BET, K * EV * confidence * bankroll)             │
+│  sigmoid-dampened, asymmetric boundary correction               │
+│  EV_net = |p_true − p_market| − slippage                        │
+│  size = min(MAX_BET, K × EV × confidence × bankroll)            │
 └────────────────────────────┬────────────────────────────────────┘
                              │ Signal
                              ▼
@@ -61,15 +64,14 @@ An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket
 │  RISK LAYER   risk.py                                             │
 │  daily loss cap / max concurrent positions /                     │
 │  per-category exposure / consecutive loss cooldown               │
-│  per-market 10-min cooldown (prevents duplicate signals)         │
+│  per-market 10-min signal cooldown                               │
 └────────────────────────────┬────────────────────────────────────┘
                              │ approved Signal
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  EXECUTION   executor.py                                          │
-│  limit orders at mid ± OFFSET (avoid crossing spread)           │
-│  slippage estimation & rejection                                  │
-│  retry logic (3 attempts) + partial fill handling                │
+│  limit orders at mid ± offset (avoid crossing spread)           │
+│  slippage gate, retry logic (3 attempts), partial fill handling  │
 │  full latency tracking: event → classification → execution       │
 └────────────────────────────┬────────────────────────────────────┘
                              │ ExecutionResult
@@ -79,7 +81,7 @@ An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket
 │  logger.py      — SQLite WAL (trades, news, calibration)        │
 │  calibrator.py  — predicted vs actual, Brier score, ECE          │
 │  metrics.py     — rolling Sharpe, drawdown, latency p50/p95/p99  │
-│  api.py         — FastAPI real-time signal broadcast (WebSocket) │
+│  api.py         — FastAPI + WebSocket real-time signal feed      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,35 +89,22 @@ An autonomous, event-driven trading pipeline for [Polymarket](https://polymarket
 
 ## Quickstart
 
-### 1. Install dependencies
-
 ```bash
+# 1. Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. Configure environment
+# 2. Configure environment
+cp .env.example .env   # fill in API keys
 
-```bash
-cp .env.example .env
-# Fill in your API keys (see Configuration section)
-```
-
-### 3. Run in dry-run mode
-
-```bash
+# 3. Run (dry-run by default)
 python cli.py watch
-```
 
-### 4. Check calibration report
-
-```bash
-python cli.py calibrate
-```
-
-### 5. Run backtest
-
-```bash
-python cli.py backtest
+# 4. Other commands
+python cli.py stats       # trading summary
+python cli.py markets     # tracked market list
+python cli.py calibrate   # probability calibration report
+python cli.py backtest    # strategy replay
+python api.py             # start FastAPI + WebSocket server on :8000
 ```
 
 ---
@@ -123,27 +112,27 @@ python cli.py backtest
 ## Environment Variables
 
 ```bash
-# LLM (primary — free tier)
-GROQ_API_KEY=your_groq_key
+# LLM — primary (free tier)
+GROQ_API_KEY=
 
-# Fallback LLM (optional)
-ANTHROPIC_API_KEY=your_anthropic_key
+# LLM — fallback (optional)
+ANTHROPIC_API_KEY=
 
-# Polymarket CLOB (required for live trading)
+# Polymarket CLOB (required for live trading only)
 POLYMARKET_API_KEY=
 POLYMARKET_API_SECRET=
 POLYMARKET_API_PASSPHRASE=
 POLYMARKET_PRIVATE_KEY=
 
-# News sources (optional — more = better coverage)
-TWITTER_BEARER_TOKEN=
-GNEWS_API_KEY=
-NEWSAPI_KEY=
+# News sources (more = better coverage; all optional)
+TWITTER_BEARER_TOKEN=      # requires Basic tier ($100/mo) for stream access
+NEWSAPI_KEY=               # 100 req/day free
+GNEWS_API_KEY=             # 100 req/day free
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHANNEL_IDS=
 
-# Trading settings
-DRY_RUN=true          # set false for live trading
+# Trading controls
+DRY_RUN=true
 MAX_BET_USD=25
 BANKROLL_USD=1000
 DAILY_LOSS_LIMIT_USD=100
@@ -151,41 +140,56 @@ DAILY_LOSS_LIMIT_USD=100
 
 ---
 
-## Module Reference
+## Key Algorithms
 
-| Module | Role |
-|--------|------|
-| `pipeline.py` | Main orchestrator — concurrent event handling, full latency accounting |
-| `news_stream.py` | 7-source news aggregator (Twitter, Telegram, RSS, NewsAPI, Reddit, GNews, GDELT) |
-| `nlp_processor.py` | NER, sentiment, impact scoring, temporal decay |
-| `matcher.py` | Semantic market routing via sentence-transformers embeddings |
-| `classifier.py` | 3-pass LLM voting with consistency scoring |
-| `edge_model.py` | Price adjustment model, EV calculation, position sizing |
-| `market_watcher.py` | Live microstructure: WebSocket prices, order book, momentum gate |
-| `executor.py` | Limit order placement with retry + partial fill handling |
-| `risk.py` | Daily loss cap, position limits, category exposure, cooldowns |
-| `calibrator.py` | Brier score, ECE, per-source/category accuracy breakdown |
-| `backtest.py` | Strategy replay with simulated slippage and partial fills |
-| `metrics.py` | Rolling Sharpe, drawdown, latency distribution |
-| `logger.py` | SQLite WAL logging with indexed queries |
-| `scorer.py` | Market scoring against news for CLI reporting |
-| `api.py` | FastAPI server + WebSocket signal broadcaster |
-| `config.py` | All settings, thresholds, and API keys |
+### Edge Model
+
+The price adjustment is computed as:
+
+```
+raw = α·materiality + β·confidence + γ·novelty    (α=0.40, β=0.30, γ=0.30)
+room = distance from p_market to boundary (0.05 or 0.95)
+adj = room × (1 − exp(−2·raw))                    (sigmoid dampening)
+adj = min(adj, 0.12)                               (hard cap at 12%)
+p_true = p_market ± adj
+EV_net = |p_true − p_market| − estimated_slippage
+```
+
+Position sizing uses a conservative Kelly variant:
+```
+size = min(MAX_BET, K × EV_net × confidence × bankroll)   K=0.25
+```
+
+### 3-Pass LLM Voting
+
+Each news × market pair runs 3 independent Groq inference calls concurrently (bounded by a semaphore at 9 in-flight to stay within the 30 RPM free tier). Results are majority-voted on direction; metrics are averaged over agreeing passes only. A classification is actionable only when all four gates pass: `confidence ≥ 0.55`, `materiality ≥ 0.30`, `novelty ≥ 0.20`, `consistency ≥ 0.60`.
+
+### NLP Impact Score
+
+```
+impact = 0.20·source_reliability
+       + 0.20·|sentiment|·sentiment_confidence
+       + 0.20·entity_importance
+       + 0.25·novelty_score        (upweighted — already-priced news has near-zero alpha)
+       + 0.15·velocity_score
+
+relevance(t) = impact × exp(−0.05 × age_minutes)   (half-life ≈ 14 min)
+```
 
 ---
 
-## Configuration
+## Configuration Reference
 
 ### Edge Model
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `EDGE_ALPHA` | 0.40 | Weight on materiality in price adjustment |
-| `EDGE_BETA` | 0.30 | Weight on confidence |
-| `EDGE_GAMMA` | 0.30 | Weight on novelty score |
+| `EDGE_ALPHA` | 0.40 | Materiality weight |
+| `EDGE_BETA` | 0.30 | Confidence weight |
+| `EDGE_GAMMA` | 0.30 | Novelty weight |
 | `EDGE_THRESHOLD` | 0.03 | Min net EV to trade |
-| `EDGE_MAX_ADJUSTMENT` | 0.12 | Max price adjustment (12% cap) |
-| `MIN_CONFIDENCE` | 0.55 | Min LLM confidence to proceed |
-| `MIN_NOVELTY` | 0.20 | Skip if likely already priced in |
+| `EDGE_MAX_ADJUSTMENT` | 0.12 | Max price adjustment cap |
+| `MIN_CONFIDENCE` | 0.55 | Min LLM confidence |
+| `MIN_NOVELTY` | 0.20 | Min novelty score |
 
 ### Risk Controls
 | Setting | Default | Description |
@@ -203,15 +207,36 @@ DAILY_LOSS_LIMIT_USD=100
 | `MAX_SPREAD_FRACTION` | 0.08 | Skip if spread > 8% |
 | `MAX_SLIPPAGE_FRACTION` | 0.03 | Reject if slippage > 3% |
 | `LIMIT_ORDER_OFFSET` | 0.01 | Place limit 1¢ inside spread |
-| `ORDER_RETRY_ATTEMPTS` | 3 | Max retry count |
+| `ORDER_RETRY_ATTEMPTS` | 3 | Max retries |
 
 ### Market Selection
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `MIN_VOLUME_USD` | 1,000 | Min market volume |
-| `MAX_VOLUME_USD` | 500,000 | Max market volume (avoid over-efficient) |
+| `MAX_VOLUME_USD` | 500,000 | Avoid over-efficient markets |
 | `PREFER_SHORT_DURATION_DAYS` | 30 | Prioritize markets resolving within N days |
-| `MARKET_CATEGORIES` | ai, technology, crypto, politics, science | Categories to track |
+
+---
+
+## Module Reference
+
+| Module | Role |
+|--------|------|
+| `pipeline.py` | Main orchestrator — concurrent event dispatch, latency accounting |
+| `news_stream.py` | 7-source aggregator with dedup router |
+| `nlp_processor.py` | NER, sentiment, impact scoring, temporal decay |
+| `matcher.py` | Semantic routing via sentence-transformers embeddings |
+| `classifier.py` | 3-pass concurrent LLM voting with consistency scoring |
+| `edge_model.py` | Price adjustment, EV calculation, position sizing |
+| `market_watcher.py` | Live microstructure: WebSocket prices, order book, momentum gate |
+| `executor.py` | Limit order placement with retry and partial fill handling |
+| `risk.py` | Daily loss cap, position limits, category exposure, cooldowns |
+| `calibrator.py` | Brier score, ECE, per-source accuracy breakdown |
+| `backtest.py` | Strategy replay with simulated slippage |
+| `metrics.py` | Rolling Sharpe, drawdown, latency distribution |
+| `logger.py` | SQLite WAL logging |
+| `api.py` | FastAPI server + WebSocket signal broadcaster |
+| `config.py` | All settings loaded from `.env` |
 
 ---
 
@@ -221,40 +246,35 @@ DAILY_LOSS_LIMIT_USD=100
 T+0ms    Twitter stream receives: "Fed signals unexpected rate cut"
 T+50ms   NewsEvent dispatched to pipeline
 T+52ms   NLP: sentiment=+0.71, impact=0.68, entities=[Fed, rate]
-T+55ms   semantic match → 3 candidate markets found
-         (e.g. "Will Fed cut rates before June 2025?" sim=0.82)
+T+55ms   Semantic match → 3 candidate markets found
+         "Will Fed cut rates before June 2025?" sim=0.82
 T+60ms   3 concurrent LLM passes launched (llama-3.3-70b, temp=0.15)
-T+350ms  Passes complete: YES/YES/YES, conf=0.78, mat=0.71,
-         novelty=0.82, consistency=100%
-T+355ms  Order book fetch: spread=0.04, depth=$850, liq=0.85
-T+356ms  Momentum check: Δprice=+0.02 (below 0.05 threshold, OK)
-T+357ms  Edge model: p_market=0.42 → p_true=0.54, EV_net=0.10
-         size = min($25, 0.25 * 0.10 * 0.78 * $1000) = $19.50
+T+350ms  Passes: YES/YES/YES — conf=0.78 mat=0.71 nov=0.82 consistency=100%
+T+355ms  Order book: spread=0.04, depth=$850, liq=0.85
+T+356ms  Momentum check: Δprice=+0.02 (below 0.05 threshold — OK)
+T+357ms  Edge: p_market=0.42 → p_true=0.54, EV_net=0.10
+         size = min($25, 0.25 × 0.10 × 0.78 × $1000) = $19.50
 T+358ms  Risk gates: daily_ok, positions=2/5, category_ok, no_cooldown
 T+380ms  Limit order: BUY YES @0.44 (mid − offset)
-T+410ms  Order confirmed: filled $19.50 @0.443, slippage=+0.003
+T+410ms  Filled $19.50 @0.443, slippage=+0.003
 T+410ms  Trade logged → SQLite, signal broadcast → WebSocket
 ```
 
 ---
 
-## Further Optimization Opportunities
+## Further Optimization
 
 ### Speed
-- **Rust CLOB client**: Replace py_clob_client with a Rust extension — eliminates GIL overhead, reduces execution from ~30ms to ~3ms
-- **Parallel inference**: Run LLM passes against multiple Groq API keys simultaneously — reduces classification from 300ms to 100ms
-- **Pre-warm embeddings**: Keep sentence-transformers warm at startup with periodic no-op inference
+- **Rust CLOB client** — replace `py_clob_client`, eliminate GIL overhead, ~30ms → ~3ms execution
+- **Parallel Groq keys** — fan passes across multiple API keys, ~300ms → ~100ms classification
+- **Pre-warm embeddings** — periodic no-op inference at startup to avoid cold-start latency
 
 ### Edge Model
-- **Bayesian updating**: Treat each classification pass as a Bayesian update to a Beta prior — more principled than majority vote
-- **Historical calibration multiplier**: Weight p_true adjustment by empirical accuracy per source/category (from calibrator)
-- **Micro-feature engineering**: Add bid/ask imbalance, volume spike, time-to-resolution decay to adjustment function
-
-### Market Selection
-- **Resolution predictor**: Train a small model on historical data to predict which markets are most likely to move soon
-- **Correlation filter**: Avoid correlated positions (e.g., two crypto markets simultaneously)
+- **Historical calibration multiplier** — weight `p_true` adjustment by empirical accuracy per source/category (from calibrator)
+- **Micro-feature engineering** — add bid/ask imbalance, volume spike, time-to-resolution decay
+- **Beta prior update** — treat each LLM pass as a conjugate update to a Beta(α, β) prior
 
 ### Infrastructure
-- **Redis pub/sub**: Replace asyncio queues with Redis for multi-process pipelines and cross-restart dedup
-- **Co-location**: Deploy on a VPS in same region as Polymarket CLOB servers (US-East) for lower latency
-- **Prometheus + Grafana**: Export metrics for real-time monitoring dashboard
+- **Redis pub/sub** — replace asyncio queues for multi-process pipelines and cross-restart dedup
+- **Co-location** — VPS in US-East (same region as Polymarket CLOB) for lower network latency
+- **Prometheus + Grafana** — export metrics for real-time monitoring

@@ -1,18 +1,3 @@
-"""
-Microstructure-aware market watcher.
-
-Maintains live snapshots of tracked markets with:
-  - Real-time price feed (WebSocket)
-  - Order book depth analysis
-  - Spread calculation
-  - Price momentum detection
-  - Liquidity scoring
-
-Used by the pipeline to:
-  - Filter out markets that are already moving (momentum gate)
-  - Estimate slippage before submitting orders
-  - Prioritize liquid markets
-"""
 from __future__ import annotations
 
 import asyncio
@@ -32,29 +17,24 @@ from markets import Market, fetch_active_markets, filter_by_categories
 log = logging.getLogger(__name__)
 
 
-# ── Price tick for momentum tracking ──────────────────────────────────────────
-
 @dataclass
 class PriceTick:
     price: float
-    timestamp: float    # monotonic seconds
+    timestamp: float
 
-
-# ── Order book snapshot ────────────────────────────────────────────────────────
 
 @dataclass
 class OrderBookSnapshot:
     best_bid: float = 0.0
     best_ask: float = 1.0
-    bid_depth_usd: float = 0.0    # USD depth across top-3 bid levels
-    ask_depth_usd: float = 0.0    # USD depth across top-3 ask levels
-    spread: float = 1.0           # ask - bid
+    bid_depth_usd: float = 0.0
+    ask_depth_usd: float = 0.0
+    spread: float = 1.0
     mid: float = 0.5
-    liquidity_score: float = 0.0  # 0=illiquid, 1=very liquid
+    liquidity_score: float = 0.0
 
     @classmethod
     def from_clob_response(cls, data: dict) -> "OrderBookSnapshot":
-        """Parse a CLOB order book response."""
         try:
             bids = sorted(data.get("bids", []), key=lambda x: float(x.get("price", 0)), reverse=True)
             asks = sorted(data.get("asks", []), key=lambda x: float(x.get("price", 1)))
@@ -67,7 +47,6 @@ class OrderBookSnapshot:
             spread = best_ask - best_bid
             mid = (best_bid + best_ask) / 2
 
-            # Depth: sum USD value of top 3 levels
             bid_depth = sum(
                 float(b.get("price", 0)) * float(b.get("size", 0))
                 for b in bids[:3]
@@ -77,9 +56,8 @@ class OrderBookSnapshot:
                 for a in asks[:3]
             )
 
-            # Liquidity score: harmonic mean of bid/ask depth, normalized
             min_depth = min(bid_depth, ask_depth)
-            liq = min(1.0, min_depth / 1000.0)    # $1000 depth → score=1.0
+            liq = min(1.0, min_depth / 1000.0)  # $1000 depth → score=1.0
 
             return cls(
                 best_bid=best_bid,
@@ -94,8 +72,6 @@ class OrderBookSnapshot:
             return cls()
 
 
-# ── Market snapshot ────────────────────────────────────────────────────────────
-
 @dataclass
 class MarketSnapshot:
     market: Market
@@ -103,7 +79,6 @@ class MarketSnapshot:
     prev_price: float
     last_update: datetime
     order_book: OrderBookSnapshot = field(default_factory=OrderBookSnapshot)
-    # Rolling price history for momentum
     price_history: Deque[PriceTick] = field(default_factory=lambda: deque(maxlen=120))
 
     @property
@@ -112,10 +87,6 @@ class MarketSnapshot:
 
     @property
     def momentum(self) -> float:
-        """
-        Price change over MOMENTUM_WINDOW_SECONDS.
-        Positive = price moving up; negative = price moving down.
-        """
         now = time.monotonic()
         cutoff = now - config.MOMENTUM_WINDOW_SECONDS
         history = [t for t in self.price_history if t.timestamp >= cutoff]
@@ -125,13 +96,11 @@ class MarketSnapshot:
 
     @property
     def is_moving(self) -> bool:
-        """True if price has moved too much recently — avoid chasing."""
         return abs(self.momentum) > config.MOMENTUM_THRESHOLD
 
     @property
     def spread(self) -> float:
         if self.order_book.spread < 0.001:
-            # Fallback to market bid/ask spread estimate from price
             p = self.last_price
             return max(0.01, min(0.1, 0.02 + 0.03 * (1 - abs(p - 0.5) * 2)))
         return self.order_book.spread
@@ -141,34 +110,21 @@ class MarketSnapshot:
         return self.order_book.liquidity_score
 
     def estimated_slippage(self, side: str, size_usd: float) -> float:
-        """
-        Estimate slippage for a given order size.
-        Larger orders on thin books = more slippage.
-        """
         depth = self.order_book.bid_depth_usd if side == "NO" else self.order_book.ask_depth_usd
         if depth <= 0:
             return self.spread
-        impact = size_usd / depth          # market impact fraction
+        impact = size_usd / depth
         return min(self.spread + impact * 0.5, 0.15)
 
 
-# ── Watcher ────────────────────────────────────────────────────────────────────
-
 class MarketWatcher:
-    """
-    Maintains live microstructure snapshots for all tracked niche markets.
-    Data sources:
-      1. WebSocket — real-time price ticks (Polymarket CLOB)
-      2. REST (CLOB) — order book depth (polled per-market on demand)
-      3. Gamma API — market list refresh every 5 minutes
-    """
 
     def __init__(self):
         self.snapshots: dict[str, MarketSnapshot] = {}
         self.tracked_markets: list[Market] = []
         self._refresh_interval = 300
         self._ws_connected = False
-        self._ws = None   # live websocket handle, used to subscribe new markets
+        self._ws = None
         self._http = httpx.AsyncClient(timeout=10)
         self.stats = {
             "ws_messages": 0,
@@ -176,8 +132,6 @@ class MarketWatcher:
             "market_refreshes": 0,
             "orderbook_fetches": 0,
         }
-
-    # ── Market list ────────────────────────────────────────────────────────────
 
     def get_niche_markets(self, markets: list[Market]) -> list[Market]:
         eligible = [
@@ -189,18 +143,14 @@ class MarketWatcher:
         if not config.PREFER_SHORT_DURATION_DAYS:
             return eligible
 
-        # Sort: markets resolving within PREFER_SHORT_DURATION_DAYS come first,
-        # then remaining markets sorted by end_date ascending (soonest first).
         now = datetime.now(timezone.utc)
         cutoff_days = config.PREFER_SHORT_DURATION_DAYS
 
         def _days_to_expiry(m: Market) -> float:
-            """Return days until market resolution, or inf if unparseable."""
             ed = m.end_date
             if not ed:
                 return float("inf")
             try:
-                # Handle ISO strings with or without timezone
                 if ed.endswith("Z"):
                     ed = ed[:-1] + "+00:00"
                 dt = datetime.fromisoformat(ed)
@@ -235,12 +185,10 @@ class MarketWatcher:
 
     async def refresh_markets(self):
         try:
-            # Fetch Polymarket markets
             all_markets = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: fetch_active_markets(limit=200)
             )
 
-            # Merge Kalshi markets if enabled
             if config.KALSHI_ENABLED:
                 try:
                     from kalshi_markets import fetch_kalshi_markets
@@ -276,7 +224,6 @@ class MarketWatcher:
             for stale_id in existing_ids - new_ids:
                 del self.snapshots[stale_id]
 
-            # Subscribe new markets to live WebSocket if connected
             if newly_added and self._ws_connected and self._ws is not None:
                 for m in newly_added:
                     for token in m.tokens:
@@ -294,7 +241,6 @@ class MarketWatcher:
             self.stats["market_refreshes"] += 1
             log.info(f"[watcher] Tracking {len(self.tracked_markets)} niche markets")
 
-            # Update embedding cache with new market list
             try:
                 from matcher import update_market_embeddings
                 update_market_embeddings(self.tracked_markets)
@@ -304,13 +250,7 @@ class MarketWatcher:
         except Exception as e:
             log.warning(f"[watcher] Market refresh error: {e}")
 
-    # ── Order book depth (on-demand) ───────────────────────────────────────────
-
     async def fetch_order_book(self, market: Market) -> OrderBookSnapshot:
-        """
-        Fetch live order book for a specific market token from CLOB.
-        Called before executing a trade to get accurate spread + depth.
-        """
         if not market.tokens:
             return OrderBookSnapshot()
 
@@ -328,7 +268,6 @@ class MarketWatcher:
             snap = OrderBookSnapshot.from_clob_response(data)
             self.stats["orderbook_fetches"] += 1
 
-            # Update stored snapshot
             if market.condition_id in self.snapshots:
                 self.snapshots[market.condition_id].order_book = snap
 
@@ -336,8 +275,6 @@ class MarketWatcher:
         except Exception as e:
             log.debug(f"[watcher] Order book fetch failed for {market.condition_id}: {e}")
             return OrderBookSnapshot()
-
-    # ── WebSocket ──────────────────────────────────────────────────────────────
 
     async def _connect_websocket(self):
         try:
@@ -408,10 +345,7 @@ class MarketWatcher:
                 self.stats["price_updates"] += 1
                 break
 
-    # ── Background tasks ───────────────────────────────────────────────────────
-
     async def _polling_fallback(self):
-        """Re-poll market list when WebSocket is down."""
         while True:
             await asyncio.sleep(30)
             if not self._ws_connected:
@@ -432,13 +366,10 @@ class MarketWatcher:
             return_exceptions=True,
         )
 
-    # ── Lookup helpers ─────────────────────────────────────────────────────────
-
     def get_snapshot(self, condition_id: str) -> MarketSnapshot | None:
         return self.snapshots.get(condition_id)
 
     def get_liquid_markets(self) -> list[Market]:
-        """Return markets with sufficient depth and acceptable spread."""
         result = []
         for snap in self.snapshots.values():
             if (
@@ -450,7 +381,6 @@ class MarketWatcher:
         return result
 
     def get_microstructure(self, condition_id: str) -> dict:
-        """Return a dict of microstructure metrics for a market."""
         snap = self.snapshots.get(condition_id)
         if not snap:
             return {}

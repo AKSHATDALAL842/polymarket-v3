@@ -1,13 +1,3 @@
-"""
-Execution Engine — smart order placement with slippage control and latency tracking.
-
-Design:
-  - Limit orders placed inside the spread (best_bid + OFFSET or best_ask - OFFSET)
-  - Rejects orders where estimated slippage exceeds MAX_SLIPPAGE_FRACTION
-  - Handles partial fills via retry loop
-  - Tracks event-to-execution latency on every trade
-  - Dry-run by default (DRY_RUN=true in config)
-"""
 from __future__ import annotations
 
 import asyncio
@@ -23,17 +13,15 @@ from edge_model import Signal
 log = logging.getLogger(__name__)
 
 
-# ── Execution result ───────────────────────────────────────────────────────────
-
 @dataclass
 class ExecutionResult:
     trade_id: int | None
-    status: str                  # "executed", "dry_run", "rejected_*", "error_*"
+    status: str
     order_id: str | None
-    filled_size: float           # USD actually filled
-    fill_price: float            # average fill price
-    slippage: float              # actual fill_price - expected_price
-    latency_ms: int              # event-to-execution wall time
+    filled_size: float
+    fill_price: float
+    slippage: float
+    latency_ms: int
     retries: int = 0
 
     @property
@@ -41,65 +29,41 @@ class ExecutionResult:
         return self.status in ("executed", "dry_run", "paper")
 
 
-# ── Pre-flight checks ──────────────────────────────────────────────────────────
-
 def _check_risk_gates(signal: Signal) -> str | None:
-    """
-    Returns a rejection reason string, or None if trade passes risk checks.
-    Risk manager imports are deferred to avoid circular imports.
-    """
     from risk import RiskManager
     rm = RiskManager.instance()
 
-    # Daily loss cap
     if not rm.can_trade_daily():
         return "rejected_daily_limit"
 
-    # Concurrent positions cap
     if not rm.can_open_position():
         return "rejected_max_positions"
 
-    # Per-category exposure
     category = signal.market.category
     if not rm.can_trade_category(category, signal.bet_amount):
         return f"rejected_category_exposure_{category}"
 
-    # Cooldown after consecutive losses
     if rm.in_cooldown():
         return "rejected_cooldown"
 
-    # Slippage guard
     if signal.estimated_slippage > config.MAX_SLIPPAGE_FRACTION:
         return "rejected_slippage"
 
     return None
 
 
-# ── Limit order price calculation ──────────────────────────────────────────────
-
 def _compute_limit_price(signal: Signal) -> float:
-    """
-    Place limit orders slightly inside the spread to avoid crossing it.
-    For a YES buy: bid + OFFSET (slightly above current bid)
-    For a NO buy:  ask - OFFSET (slightly below current ask)
-    """
     offset = config.LIMIT_ORDER_OFFSET
-    ob = signal.classification  # not order book — using snap from pipeline
-    # Use the mid from the order book if available
     mid = signal.p_market
     spread = signal.spread
 
     if signal.side == "YES":
-        # We want to buy YES: place just above current bid
         price = max(0.01, mid - spread / 2 + offset)
     else:
-        # We want to buy NO: price is 1 - YES_ask
         price = min(0.99, mid + spread / 2 - offset)
 
     return round(price, 4)
 
-
-# ── Dry run ────────────────────────────────────────────────────────────────────
 
 def _dry_run_execution(signal: Signal, exec_start: float) -> ExecutionResult:
     latency = int((time.monotonic() - exec_start) * 1000)
@@ -124,10 +88,7 @@ def _dry_run_execution(signal: Signal, exec_start: float) -> ExecutionResult:
     )
 
 
-# ── Live execution ─────────────────────────────────────────────────────────────
-
 def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
-    """Place a real limit order via Polymarket CLOB, with retry logic."""
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import OrderArgs, OrderType
@@ -245,8 +206,6 @@ def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
     )
 
 
-# ── Logging helper ─────────────────────────────────────────────────────────────
-
 def _log_trade(
     signal: Signal,
     status: str,
@@ -284,10 +243,7 @@ def _log_trade(
         return None
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
 def execute_trade(signal: Signal) -> ExecutionResult:
-    """Synchronous entry point. Checks risk gates, then routes by market source."""
     exec_start = time.monotonic()
 
     rejection = _check_risk_gates(signal)
@@ -307,20 +263,17 @@ def execute_trade(signal: Signal) -> ExecutionResult:
             latency_ms=latency,
         )
 
-    # In DRY_RUN mode, all signals (Polymarket and Kalshi) go to portfolio.simulate_trade()
     if config.DRY_RUN:
         try:
             from portfolio import get_portfolio
             return get_portfolio().simulate_trade(signal)
         except Exception as e:
             log.warning(f"[executor] Portfolio unavailable, falling back to dry_run: {e}")
-            # Platform-specific fallback
             if getattr(signal.market, "source", "polymarket") == "kalshi":
                 from kalshi_executor import execute_kalshi
                 return execute_kalshi(signal)
             return _dry_run_execution(signal, exec_start)
 
-    # Live trading: route by market source
     if getattr(signal.market, "source", "polymarket") == "kalshi":
         from kalshi_executor import execute_kalshi
         return execute_kalshi(signal)
@@ -329,5 +282,4 @@ def execute_trade(signal: Signal) -> ExecutionResult:
 
 
 async def execute_trade_async(signal: Signal) -> ExecutionResult:
-    """Async wrapper — runs blocking CLOB calls in a thread pool."""
     return await asyncio.get_running_loop().run_in_executor(None, execute_trade, signal)

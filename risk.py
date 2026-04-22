@@ -1,15 +1,3 @@
-"""
-Risk Management Layer — stateful risk controller for the live pipeline.
-
-Enforces:
-  1. Daily loss cap (hard stop)
-  2. Max concurrent open positions
-  3. Per-category exposure limit
-  4. Cooldown after N consecutive losses
-
-All state is in-memory (resets on restart). The daily P&L is cross-checked
-against logger.get_daily_pnl() so it survives module reloads.
-"""
 from __future__ import annotations
 
 import logging
@@ -24,9 +12,6 @@ log = logging.getLogger(__name__)
 
 
 class RiskManager:
-    """
-    Singleton risk controller. Get the shared instance via RiskManager.instance().
-    """
     _singleton: Optional["RiskManager"] = None
     _lock = Lock()
 
@@ -38,20 +23,17 @@ class RiskManager:
         return cls._singleton
 
     def __init__(self):
-        self._open_positions: dict[str, float] = {}      # condition_id → bet_amount
-        self._category_exposure: dict[str, float] = defaultdict(float)  # category → USD open
+        self._open_positions: dict[str, float] = {}
+        self._category_exposure: dict[str, float] = defaultdict(float)
         self._consecutive_losses: int = 0
-        self._cooldown_until: float = 0.0                # monotonic time
+        self._cooldown_until: float = 0.0
         self._daily_pnl_cache: float = 0.0
         self._daily_pnl_last_check: float = 0.0
         self._state_lock = Lock()
 
-    # ── Checks ─────────────────────────────────────────────────────────────────
-
     _DAILY_PNL_CACHE_TTL = 30.0  # re-query logger at most every 30s
 
     def can_trade_daily(self) -> bool:
-        """Check daily loss cap. Caches result for 30s to avoid DB thrashing."""
         now = time.monotonic()
         if now - self._daily_pnl_last_check > self._DAILY_PNL_CACHE_TTL:
             try:
@@ -90,8 +72,6 @@ class RiskManager:
             return True
         return False
 
-    # ── State updates ───────────────────────────────────────────────────────────
-
     def on_trade_opened(self, condition_id: str, category: str, amount_usd: float):
         with self._state_lock:
             self._open_positions[condition_id] = amount_usd
@@ -120,8 +100,6 @@ class RiskManager:
             else:
                 self._consecutive_losses = 0
 
-    # ── Status ──────────────────────────────────────────────────────────────────
-
     def status(self) -> dict:
         return {
             "open_positions": len(self._open_positions),
@@ -136,7 +114,6 @@ class RiskManager:
         }
 
     def reset_daily(self):
-        """Call at midnight to reset daily state."""
         self._consecutive_losses = 0
         self._cooldown_until = 0.0
         log.info("[risk] Daily state reset")

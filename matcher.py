@@ -1,14 +1,3 @@
-"""
-Market Mapping Layer — embedding-based semantic matching.
-
-Replaces keyword overlap scoring with cosine similarity over dense vectors.
-Supports sentence-transformers (local, fast) or OpenAI embeddings.
-
-Key design decisions:
-- Embeddings for markets are cached in-memory and refreshed on market list update.
-- A single news event can route to multiple markets (top-k above threshold).
-- Falls back to keyword matching when embeddings are unavailable.
-"""
 from __future__ import annotations
 
 import logging
@@ -23,10 +12,7 @@ from markets import Market
 
 log = logging.getLogger(__name__)
 
-
-# ── Embedding backend ──────────────────────────────────────────────────────────
-
-EmbedFn = Callable[[list[str]], np.ndarray]  # texts → (N, D) float32 array
+EmbedFn = Callable[[list[str]], np.ndarray]
 
 _embed_fn: EmbedFn | None = None
 
@@ -34,7 +20,6 @@ _embed_fn: EmbedFn | None = None
 def _load_sentence_transformers() -> EmbedFn:
     try:
         import os
-        # Use HF token if available — suppresses unauthenticated warning
         hf_token = os.getenv("HF_TOKEN") or config.ANTHROPIC_API_KEY and None
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer("all-MiniLM-L6-v2", token=hf_token or None)
@@ -87,19 +72,16 @@ def get_embed_fn() -> EmbedFn:
     return _embed_fn
 
 
-# ── Market embedding cache ─────────────────────────────────────────────────────
-
 @dataclass
 class _MarketEmbedding:
     market: Market
-    vector: np.ndarray        # (D,) normalized
+    vector: np.ndarray
 
 
 class MarketEmbeddingCache:
-    """Maintains normalized embeddings for the active market list."""
 
     def __init__(self):
-        self._cache: dict[str, _MarketEmbedding] = {}    # condition_id → entry
+        self._cache: dict[str, _MarketEmbedding] = {}
         self._last_build: float = 0.0
 
     def update(self, markets: list[Market]) -> None:
@@ -139,17 +121,14 @@ _cache = MarketEmbeddingCache()
 
 
 def update_market_embeddings(markets: list[Market]) -> None:
-    """Call this whenever the market list changes."""
     _cache.update(markets)
 
-
-# ── Cosine similarity matching ─────────────────────────────────────────────────
 
 @dataclass
 class MarketMatch:
     market: Market
     similarity: float
-    match_method: str    # "semantic" or "keyword"
+    match_method: str
 
 
 def match_news_to_markets(
@@ -158,12 +137,6 @@ def match_news_to_markets(
     top_k: int | None = None,
     min_similarity: float | None = None,
 ) -> list[MarketMatch]:
-    """
-    Semantic market matching: embed the headline, compute cosine similarity
-    against all cached market embeddings, return top-k above threshold.
-
-    Falls back to keyword matching if embeddings are unavailable.
-    """
     k = top_k or config.MATCHER_TOP_K
     threshold = min_similarity if min_similarity is not None else config.MATCHER_MIN_SIMILARITY
 
@@ -172,7 +145,6 @@ def match_news_to_markets(
     if embed is not None and _cache.all_entries():
         return _semantic_match(headline, k, threshold)
 
-    # Fallback: keyword matching
     return _keyword_match(headline, markets, k)
 
 
@@ -187,14 +159,13 @@ def _semantic_match(
         return []
 
     try:
-        query_vec = embed([headline])[0]   # (D,)
+        query_vec = embed([headline])[0]
     except Exception as e:
         log.warning(f"[matcher] Query embedding failed: {e}")
         return []
 
-    # Stack all market vectors: (N, D)
-    matrix = np.stack([e.vector for e in entries])    # (N, D), already normalized
-    scores = matrix @ query_vec                       # (N,) cosine similarity
+    matrix = np.stack([e.vector for e in entries])  # (N, D), already normalized
+    scores = matrix @ query_vec                      # (N,) cosine similarity
 
     ranked_idx = np.argsort(-scores)
     results = []
@@ -218,7 +189,6 @@ def _keyword_match(
     markets: list[Market],
     top_k: int,
 ) -> list[MarketMatch]:
-    """Simple keyword overlap — used when embeddings are unavailable."""
     headline_lower = headline.lower()
     scored: list[tuple[float, Market]] = []
 

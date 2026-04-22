@@ -1,19 +1,3 @@
-"""
-NLP Intelligence Layer — NER, sentiment analysis, impact scoring, temporal decay.
-
-Components
-----------
-NER          : spaCy en_core_web_sm extracts persons, orgs, geopolitical entities.
-Sentiment    : VADER (fast, no GPU) — compound score → polarity + confidence.
-Impact Score : Weighted composite:
-                 Impact = w_rel*reliability + w_sent*|polarity|*conf
-                        + w_ent*entity_importance + w_nov*novelty + w_vel*velocity
-Temporal Decay: relevance(t) = impact * exp(−λ * age_minutes), λ=0.05 → half-life ≈14 min.
-Category     : Rules-based keyword tagger (politics, macro, tech, conflict, crypto).
-
-All backends degrade gracefully: if spaCy or VADER are not installed the module
-still returns a valid NLPResult with zeroed-out fields.
-"""
 from __future__ import annotations
 
 import math
@@ -22,10 +6,8 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
-# ── Lazy-loaded backends ──────────────────────────────────────────────────────
-
-_nlp = None      # spaCy pipeline
-_vader = None    # VADER SentimentIntensityAnalyzer
+_nlp = None
+_vader = None
 
 
 def _get_nlp():
@@ -58,8 +40,6 @@ def _get_vader():
     return _vader
 
 
-# ── Category keywords ─────────────────────────────────────────────────────────
-
 _CATEGORY_KEYWORDS: dict[str, set[str]] = {
     "politics": {
         "congress", "senate", "president", "election", "vote",
@@ -86,16 +66,12 @@ _CATEGORY_KEYWORDS: dict[str, set[str]] = {
     },
 }
 
-# ── Entity label importance weights ──────────────────────────────────────────
-
 _LABEL_IMPORTANCE: dict[str, float] = {
     "LAW": 0.90, "EVENT": 0.85, "ORG": 0.80, "MONEY": 0.80,
     "PERSON": 0.75, "GPE": 0.70, "PERCENT": 0.70,
     "NORP": 0.65, "PRODUCT": 0.60, "FAC": 0.50, "LOC": 0.50,
     "WORK_OF_ART": 0.40,
 }
-
-# ── Source reliability priors ─────────────────────────────────────────────────
 
 SOURCE_RELIABILITY: dict[str, float] = {
     "gnews":    0.88,
@@ -107,32 +83,27 @@ SOURCE_RELIABILITY: dict[str, float] = {
     "reddit":   0.50,
 }
 
-# Temporal decay constant — relevance halves every ≈14 minutes
-_DECAY_LAMBDA = 0.05  # per minute
+_DECAY_LAMBDA = 0.05  # per minute; half-life ≈ 13.9 minutes
 
-
-# ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
 class Entity:
     text: str
-    label: str          # PERSON, ORG, GPE, LAW, EVENT, PRODUCT, MONEY…
-    importance: float   # 0–1 derived from label priority
+    label: str
+    importance: float
 
 
 @dataclass
 class NLPResult:
     entities: list[Entity] = field(default_factory=list)
     category: str = "other"
-    sentiment_polarity: float = 0.0     # −1 (negative) → +1 (positive)
-    sentiment_confidence: float = 0.0   # 0–1 (|compound| as proxy)
-    entity_importance: float = 0.0      # max importance across extracted entities
-    impact_score: float = 0.0           # composite 0–1
-    relevance: float = 0.0              # impact after temporal decay
-    velocity_score: float = 0.0         # set externally by velocity tracker
+    sentiment_polarity: float = 0.0
+    sentiment_confidence: float = 0.0
+    entity_importance: float = 0.0
+    impact_score: float = 0.0
+    relevance: float = 0.0
+    velocity_score: float = 0.0
 
-
-# ── Core functions ────────────────────────────────────────────────────────────
 
 def extract_entities(text: str) -> list[Entity]:
     nlp = _get_nlp()
@@ -152,11 +123,6 @@ def extract_entities(text: str) -> list[Entity]:
 
 
 def analyze_sentiment(text: str) -> tuple[float, float]:
-    """
-    Returns (polarity, confidence).
-    polarity : −1.0 (very negative) → +1.0 (very positive)
-    confidence: |compound| — how far from neutral (0 = neutral)
-    """
     vader = _get_vader()
     if not vader:
         return 0.0, 0.0
@@ -187,17 +153,8 @@ def compute_impact_score(
     novelty_score: float,
     velocity_score: float = 0.0,
 ) -> float:
-    """
-    Mathematical impact model:
-        Impact = w1*source_reliability
-               + w2*|sentiment|*sentiment_confidence
-               + w3*entity_importance
-               + w4*novelty_score
-               + w5*velocity_score
-
-    Weights: (0.20, 0.20, 0.20, 0.25, 0.15) — sum = 1.0
-    Novelty is upweighted because already-priced-in news has near-zero alpha.
-    """
+    # Impact = w1*reliability + w2*|sentiment|*conf + w3*entity + w4*novelty + w5*velocity
+    # Novelty upweighted because already-priced-in news has near-zero alpha
     w = (0.20, 0.20, 0.20, 0.25, 0.15)
     reliability = SOURCE_RELIABILITY.get(source, 0.60)
     sentiment_signal = abs(sentiment_polarity) * sentiment_confidence
@@ -213,10 +170,6 @@ def compute_impact_score(
 
 
 def apply_temporal_decay(impact: float, age_seconds: float) -> float:
-    """
-    Exponential decay: relevance(t) = impact * exp(−λ * age_minutes)
-    λ = 0.05 → half-life ≈ 13.9 minutes.
-    """
     age_minutes = age_seconds / 60.0
     return impact * math.exp(-_DECAY_LAMBDA * age_minutes)
 
@@ -228,10 +181,6 @@ def process(
     novelty_score: float = 0.5,
     velocity_score: float = 0.0,
 ) -> NLPResult:
-    """
-    Full enrichment pipeline for a single headline.
-    Safe to call from async context (pure CPU, no I/O).
-    """
     entities = extract_entities(headline)
     category = classify_category(headline, entities)
     polarity, sent_conf = analyze_sentiment(headline)
