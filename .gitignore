@@ -34,8 +34,25 @@ Thumbs.db
 # Model cache (large, re-downloads automatically)
 .cache/
 
-# Claude
+# Claude / AI tools
 .claude/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+system.txt
+
+# IDE configs
+.cursor/
+.cursorrules
+.windsurfrules
+.opencode.json
+.mcp.json
+
+# AI planning docs
+docs/superpowers/
 
 # Git worktrees
 .worktrees/
+
+#kalshi_pvt_key
+Kalshi_pvt_key.txt
