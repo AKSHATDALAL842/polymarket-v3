@@ -5,8 +5,8 @@ import math
 from dataclasses import dataclass
 
 import config
-from classifier import Classification
-from markets import Market
+from signal.classifier import Classification
+from ingestion.markets import Market
 
 log = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ def detect_edge_v2(
     classification,
     news_event=None,
 ) -> Signal | None:
-    from classifier import Classification as NewClassification
+    from signal.classifier import Classification as NewClassification
     if not isinstance(classification, NewClassification):
         direction_map = {"bullish": "YES", "bearish": "NO", "neutral": "NEUTRAL"}
         direction = direction_map.get(getattr(classification, "direction", "neutral"), "NEUTRAL")

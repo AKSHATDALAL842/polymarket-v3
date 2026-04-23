@@ -18,12 +18,12 @@ from rich.text import Text
 from rich import box
 
 import config
-import logger
-from scraper import scrape_all
-from markets import fetch_active_markets, filter_by_categories, Market
-from scorer import score_market, filter_news_for_market
-from edge_model import detect_edge_v2 as detect_edge
-from executor import execute_trade
+from observability import logger
+from ingestion.scraper import scrape_all
+from ingestion.markets import fetch_active_markets, filter_by_categories, Market
+from observability.scorer import score_market, filter_news_for_market
+from signal.edge_model import detect_edge_v2 as detect_edge
+from execution.executor import execute_trade
 
 console = Console()
 

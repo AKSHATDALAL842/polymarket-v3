@@ -36,7 +36,7 @@ class RiskEngine:
             RiskDecision(approved=True, reason="ok") or
             RiskDecision(approved=False, reason="<rejection_reason>")
         """
-        from risk import RiskManager
+        from portfolio.risk import RiskManager
         rm = RiskManager.instance()
 
         if not rm.can_trade_daily():

@@ -63,7 +63,7 @@ class ExecutionEngine:
             return self._rejected_result("rejected_no_market")
 
         # Delegate to existing executor (handles DRY_RUN / LIVE routing)
-        from executor import execute_trade
+        from execution.executor import execute_trade
         return execute_trade(exec_signal)
 
     # ── Signal construction ────────────────────────────────────────────────────
@@ -76,8 +76,8 @@ class ExecutionEngine:
           1. If any news AlphaSignal has raw_signal → reuse it (update bet_amount).
           2. Otherwise build a momentum stub Signal.
         """
-        from edge_model import Signal
-        from classifier import Classification
+        from signal.edge_model import Signal
+        from signal.classifier import Classification
 
         if agg.market is None:
             log.warning(f"[execution_engine] No market object in signal {agg.market_id[:12]}")
@@ -130,7 +130,7 @@ class ExecutionEngine:
         return 0.04, 0.0
 
     def _rejected_result(self, reason: str):
-        from executor import ExecutionResult
+        from execution.executor import ExecutionResult
         return ExecutionResult(
             trade_id=None, status=reason, order_id=None,
             filled_size=0.0, fill_price=0.0, slippage=0.0, latency_ms=0,

@@ -76,13 +76,13 @@ def cmd_run(args):
 
 def cmd_backtest(args):
     """Run backtest against resolved markets."""
-    from backtest import run_backtest
+    from observability.backtest import run_backtest
     run_backtest(limit=args.limit, category=args.category)
 
 
 def cmd_calibrate(args):
     """Show classification accuracy report."""
-    from calibrator import check_resolutions, get_report
+    from observability.calibrator import check_resolutions, get_report
     from rich.panel import Panel
 
     console.print("[bold]Checking for resolved markets...[/bold]")
@@ -117,7 +117,7 @@ def cmd_calibrate(args):
 def cmd_niche(args):
     """Browse niche markets only (volume-filtered)."""
     import config
-    from markets import fetch_active_markets, filter_by_categories
+    from ingestion.markets import fetch_active_markets, filter_by_categories
 
     all_markets = fetch_active_markets(limit=200)
     categorized = filter_by_categories(all_markets)
@@ -209,7 +209,7 @@ def cmd_verify(args):
 
     # 5. News scraper (RSS)
     try:
-        from scraper import scrape_rss
+        from ingestion.scraper import scrape_rss
         items = scrape_rss(config.RSS_FEEDS[0], 12)
         console.print(f"  [bright_green]PASS[/bright_green]  RSS scraper ({len(items)} headlines)")
     except Exception as e:
@@ -231,7 +231,7 @@ def cmd_verify(args):
 
     # 8. Polymarket API
     try:
-        from markets import fetch_active_markets
+        from ingestion.markets import fetch_active_markets
         mkts = fetch_active_markets(limit=5)
         console.print(f"  [bright_green]PASS[/bright_green]  Polymarket API ({len(mkts)} markets)")
     except Exception as e:
@@ -239,7 +239,7 @@ def cmd_verify(args):
 
     # 9. Niche market filter
     try:
-        from markets import fetch_active_markets, filter_by_categories
+        from ingestion.markets import fetch_active_markets, filter_by_categories
         all_m = fetch_active_markets(limit=100)
         cat = filter_by_categories(all_m)
         niche = [m for m in cat if config.MIN_VOLUME_USD <= m.volume <= config.MAX_VOLUME_USD]
@@ -256,7 +256,7 @@ def cmd_verify(args):
 
     # 11. SQLite
     try:
-        import logger as _
+        from observability import logger as _
         console.print(f"  [bright_green]PASS[/bright_green]  SQLite database (V2 schema)")
     except Exception as e:
         console.print(f"  [red]FAIL[/red]  SQLite — {e}")
@@ -284,7 +284,7 @@ def cmd_verify(args):
 
 
 def cmd_scrape(args):
-    from scraper import scrape_all
+    from ingestion.scraper import scrape_all
 
     news = scrape_all(args.hours)
     console.print(f"\n[bold]Scraped {len(news)} headlines[/bold] (last {args.hours}h)\n")
@@ -301,7 +301,7 @@ def cmd_scrape(args):
 
 
 def cmd_markets(args):
-    from markets import fetch_active_markets, filter_by_categories
+    from ingestion.markets import fetch_active_markets, filter_by_categories
 
     all_markets = fetch_active_markets(limit=args.max)
     markets = filter_by_categories(all_markets)
@@ -322,7 +322,7 @@ def cmd_markets(args):
 
 
 def cmd_trades(args):
-    import logger
+    from observability import logger
 
     trades = logger.get_recent_trades(limit=args.limit)
     if not trades:
@@ -365,7 +365,7 @@ def cmd_trades(args):
 
 
 def cmd_stats(args):
-    import logger
+    from observability import logger
 
     stats = logger.get_trade_stats()
     daily = logger.get_daily_pnl()

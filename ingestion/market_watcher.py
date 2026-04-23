@@ -12,7 +12,7 @@ from typing import Deque
 import httpx
 
 import config
-from markets import Market, fetch_active_markets, filter_by_categories
+from ingestion.markets import Market, fetch_active_markets, filter_by_categories
 
 log = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ class MarketWatcher:
 
             if config.KALSHI_ENABLED:
                 try:
-                    from kalshi_markets import fetch_kalshi_markets
+                    from ingestion.kalshi_markets import fetch_kalshi_markets
                     kalshi = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: fetch_kalshi_markets(limit=200)
                     )
@@ -242,7 +242,7 @@ class MarketWatcher:
             log.info(f"[watcher] Tracking {len(self.tracked_markets)} niche markets")
 
             try:
-                from matcher import update_market_embeddings
+                from signal.matcher import update_market_embeddings
                 update_market_embeddings(self.tracked_markets)
             except Exception as e:
                 log.debug(f"[watcher] Embedding update skipped: {e}")

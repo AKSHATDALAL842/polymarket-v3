@@ -8,7 +8,7 @@ from typing import Callable
 import numpy as np
 
 import config
-from markets import Market
+from ingestion.markets import Market
 
 log = logging.getLogger(__name__)
 

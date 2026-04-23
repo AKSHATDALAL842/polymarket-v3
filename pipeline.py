@@ -7,15 +7,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import config
-from news_stream import NewsAggregator as NewsStream, NewsEvent
-from market_watcher import MarketWatcher
-from matcher import match_news_to_markets, update_market_embeddings
-from classifier import classify_async
-from edge_model import compute_edge
-from risk import RiskManager
-from metrics import get_tracker
-import nlp_processor
-import broadcaster
+from ingestion.news_stream import NewsAggregator as NewsStream, NewsEvent
+from ingestion.market_watcher import MarketWatcher
+from signal.matcher import match_news_to_markets, update_market_embeddings
+from signal.classifier import classify_async
+from signal.edge_model import compute_edge
+from portfolio.risk import RiskManager
+from observability.metrics import get_tracker
+from signal import nlp_processor
+from observability import broadcaster
 from alpha.momentum_alpha import MomentumAlpha
 from alpha.news_alpha import NewsAlpha
 
@@ -85,7 +85,7 @@ class Pipeline:
         source = event.source
         news_latency_ms = getattr(event, "receive_latency_ms", 0)
 
-        from categories import is_relevant_event
+        from ingestion.categories import is_relevant_event
         if not is_relevant_event(event, config.SELECTED_CATEGORIES):
             log.debug(f"[pipeline] Skipping (not in categories): {headline[:60]}")
             return

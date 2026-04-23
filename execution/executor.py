@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import config
-import logger
-from edge_model import Signal
+from observability import logger
+from signal.edge_model import Signal
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class ExecutionResult:
 
 
 def _check_risk_gates(signal: Signal) -> str | None:
-    from risk import RiskManager
+    from portfolio.risk import RiskManager
     rm = RiskManager.instance()
 
     if not rm.can_trade_daily():
@@ -104,7 +104,7 @@ def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
             latency_ms=0,
         )
 
-    from markets import get_token_id
+    from ingestion.markets import get_token_id
 
     token_id = get_token_id(signal.market, signal.side)
     if not token_id:
@@ -270,12 +270,12 @@ def execute_trade(signal: Signal) -> ExecutionResult:
         except Exception as e:
             log.warning(f"[executor] Portfolio unavailable, falling back to dry_run: {e}")
             if getattr(signal.market, "source", "polymarket") == "kalshi":
-                from kalshi_executor import execute_kalshi
+                from execution.kalshi_executor import execute_kalshi
                 return execute_kalshi(signal)
             return _dry_run_execution(signal, exec_start)
 
     if getattr(signal.market, "source", "polymarket") == "kalshi":
-        from kalshi_executor import execute_kalshi
+        from execution.kalshi_executor import execute_kalshi
         return execute_kalshi(signal)
 
     return _execute_live(signal, exec_start)

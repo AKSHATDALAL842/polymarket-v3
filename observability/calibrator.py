@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 import httpx
 
 import config
-import logger
+from observability import logger
 
 log = logging.getLogger(__name__)
 

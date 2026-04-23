@@ -113,7 +113,7 @@ class PortfolioManager:
 
     def _rejected_result(self, reason: str):
         """Return a minimal ExecutionResult for rejected trades."""
-        from executor import ExecutionResult
+        from execution.executor import ExecutionResult
         return ExecutionResult(
             trade_id=None,
             status=reason,

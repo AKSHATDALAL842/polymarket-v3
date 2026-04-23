@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 import config
-from markets import Market
+from ingestion.markets import Market
 
 log = logging.getLogger(__name__)
 
@@ -279,7 +279,7 @@ def classify(
 
 if __name__ == "__main__":
     import asyncio
-    from markets import Market
+    from ingestion.markets import Market
 
     test_market = Market(
         condition_id="test",

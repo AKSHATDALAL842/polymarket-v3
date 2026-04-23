@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import httpx
 
 import config
-from markets import Market, _infer_category, filter_by_categories
+from ingestion.markets import Market, _infer_category, filter_by_categories
 
 log = logging.getLogger(__name__)
 
@@ -37,14 +37,17 @@ _token_cache: _TokenCache | None = None
 _TOKEN_TTL = 55 * 60   # refresh 5 min before the 1-hour expiry
 
 
-def _get_auth_headers() -> dict:
+def _get_auth_headers(method: str = "GET", path: str = "/trade-api/v2/markets") -> dict:
     """
     Return auth headers.  Tries RSA key first; falls back to email/password.
     Returns an empty dict if no credentials are configured.
+
+    For RSA auth, `method` and `path` must match the actual request being signed
+    (Kalshi verifies the signature against the incoming request path).
     """
     # Option B: RSA key signing
     if config.KALSHI_API_KEY_ID and config.KALSHI_PRIVATE_KEY_PATH:
-        return _rsa_headers()
+        return _rsa_headers(method, path)
 
     # Option A: email/password JWT
     if config.KALSHI_EMAIL and config.KALSHI_PASSWORD:
@@ -86,10 +89,13 @@ def _ensure_token() -> str | None:
         return None
 
 
-def _rsa_headers() -> dict:
+def _rsa_headers(method: str, path: str) -> dict:
     """
     Build RSA-signed request headers for Kalshi API key auth.
     Requires cryptography package: pip install cryptography
+
+    Kalshi signature message: timestamp_ms + HTTP_METHOD + url_path
+    (path is the URL path only, e.g. "/trade-api/v2/markets")
     """
     try:
         import base64
@@ -100,7 +106,7 @@ def _rsa_headers() -> dict:
             private_key = serialization.load_pem_private_key(f.read(), password=None)
 
         ts = str(int(time.time() * 1000))
-        msg = (ts + "GET" + "/trade-api/v2/markets").encode()
+        msg = (ts + method.upper() + path).encode()
         sig = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
         sig_b64 = base64.b64encode(sig).decode()
 

@@ -8,5 +8,5 @@ class KalshiProvider(MarketProvider):
     name = "kalshi"
 
     def fetch_markets(self, limit: int = 200) -> list:
-        from kalshi_markets import fetch_kalshi_markets
+        from ingestion.kalshi_markets import fetch_kalshi_markets
         return fetch_kalshi_markets(limit=limit)

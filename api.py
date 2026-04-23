@@ -104,7 +104,7 @@ async def status():
 
 @app.get("/signals/recent")
 async def signals_recent(limit: int = Query(default=20, ge=1, le=200)):
-    from logger import get_recent_trades
+    from observability.logger import get_recent_trades
     trades = get_recent_trades(limit=limit)
     return {"count": len(trades), "signals": trades}
 
@@ -151,7 +151,7 @@ async def markets(
 async def stats(
     category: Optional[str] = Query(default=None, description="Filter stats by category"),
 ):
-    from logger import get_trade_stats, get_calibration_stats, get_latency_stats, get_category_stats
+    from observability.logger import get_trade_stats, get_calibration_stats, get_latency_stats, get_category_stats
     result = {
         "trades": get_trade_stats(),
         "calibration": get_calibration_stats(),
@@ -178,7 +178,7 @@ async def portfolio_state():
 @app.get("/categories")
 async def categories_info():
     import config
-    from categories import CATEGORIES
+    from ingestion.categories import CATEGORIES
     pipeline = _get_pipeline()
     markets = pipeline.watcher.tracked_markets
 
@@ -220,7 +220,7 @@ async def sources():
 
 @app.get("/subreddit-stats")
 async def subreddit_stats():
-    from reddit_source import get_subreddit_stats
+    from ingestion.reddit_source import get_subreddit_stats
     rows = get_subreddit_stats()
     return {"subreddits": rows}
 
@@ -233,9 +233,9 @@ async def prediction(event: str = Query(..., description="Free-text news headlin
     Classify a custom headline against all tracked markets and return signal candidates.
     Useful for manual testing or external callers.
     """
-    from matcher import match_news_to_markets
-    from classifier import classify_async
-    from nlp_processor import process as nlp_process
+    from signal.matcher import match_news_to_markets
+    from signal.classifier import classify_async
+    from signal.nlp_processor import process as nlp_process
 
     pipeline = _get_pipeline()
     markets = pipeline.watcher.tracked_markets

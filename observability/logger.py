@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "trades.db"
+DB_PATH = Path(__file__).parent.parent / "trades.db"
 
 
 def _conn() -> sqlite3.Connection:

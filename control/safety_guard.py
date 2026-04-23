@@ -56,7 +56,7 @@ class SafetyGuard:
 
     def _check_cooldown(self) -> SafetyCheckResult:
         try:
-            from risk import RiskManager
+            from portfolio.risk import RiskManager
             rm = RiskManager.instance()
             if rm.in_cooldown():
                 return SafetyCheckResult(

@@ -2,7 +2,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from categories import (
+from ingestion.categories import (
     CATEGORIES,
     is_relevant_event,
     get_twitter_keywords,

@@ -5,9 +5,9 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from markets import Market
-    from edge_model import Signal
-    from executor import ExecutionResult
+    from ingestion.markets import Market
+    from signal.edge_model import Signal
+    from execution.executor import ExecutionResult
 
 
 class MarketProvider(ABC):
@@ -21,7 +21,7 @@ class MarketProvider(ABC):
     def get_price(self, market_id: str) -> float | None:
         """Look up live YES price from MarketWatcher snapshots. No extra API call."""
         try:
-            from market_watcher import MarketWatcher
+            from ingestion.market_watcher import MarketWatcher
             watcher = MarketWatcher()
             snap = watcher.get_snapshot(market_id)
             return snap.yes_price if snap else None
@@ -35,5 +35,5 @@ class MarketProvider(ABC):
 
     def execute_trade(self, signal) -> "ExecutionResult":
         """Delegate to existing executor routing."""
-        from executor import execute_trade
+        from execution.executor import execute_trade
         return execute_trade(signal)

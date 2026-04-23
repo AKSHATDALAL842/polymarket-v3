@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import httpx
 
 import config
-from scraper import scrape_all, NewsItem
+from ingestion.scraper import scrape_all, NewsItem
 
 log = logging.getLogger(__name__)
 
@@ -310,7 +310,7 @@ class RedditSource:
         self._headers = {
             "User-Agent": "polymarket-pipeline/3.0 (news aggregator)"
         }
-        from reddit_source import AdaptiveSubredditSelector, is_high_signal
+        from ingestion.reddit_source import AdaptiveSubredditSelector, is_high_signal
         self._selector = AdaptiveSubredditSelector()
         self._is_high_signal = is_high_signal
 
@@ -638,7 +638,7 @@ class RSSFallback:
 class NewsAggregator:
 
     def __init__(self, output_queue: asyncio.Queue, categories=None):
-        from categories import (
+        from ingestion.categories import (
             get_twitter_keywords, get_rss_feeds,
             get_newsapi_queries, get_reddit_subreddits,
         )

@@ -25,9 +25,9 @@ from rich.console import Console
 from rich.table import Table
 
 import config
-from markets import Market
-from classifier import classify_async
-from edge_model import compute_edge
+from ingestion.markets import Market
+from signal.classifier import classify_async
+from signal.edge_model import compute_edge
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -121,7 +121,7 @@ def fetch_resolved_markets(limit: int = 50, category: str | None = None) -> list
 
             question = m.get("question", "")
             if category:
-                from markets import _infer_category
+                from ingestion.markets import _infer_category
                 cat = _infer_category(question, m.get("tags") or [])
                 if cat != category:
                     continue

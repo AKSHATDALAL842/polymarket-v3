@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import config
-import logger as lg
+from observability import logger as lg
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class Portfolio:
     # ── Trade simulation ─────────────────────────────────────────────────────
 
     def simulate_trade(self, signal) -> "ExecutionResult":
-        from executor import ExecutionResult, _log_trade
+        from execution.executor import ExecutionResult, _log_trade
         import time
 
         exec_start = time.monotonic()
@@ -73,7 +73,7 @@ class Portfolio:
                 f"[portfolio] Skipping duplicate open position for market {market_id}: "
                 f"already have {self.positions[market_id].side} position"
             )
-            from executor import ExecutionResult
+            from execution.executor import ExecutionResult
             return ExecutionResult(
                 trade_id=None,
                 status="rejected_duplicate_position",
@@ -189,7 +189,7 @@ class Portfolio:
         """Sum mark_to_market across all open positions using watcher snapshots."""
         total = 0.0
         try:
-            from market_watcher import MarketWatcher
+            from ingestion.market_watcher import MarketWatcher
             watcher = MarketWatcher()
             for market_id, pos in list(self.positions.items()):
                 if pos.status != "open":
@@ -208,7 +208,7 @@ class Portfolio:
         # Build open positions list with live unrealized P&L
         open_positions = []
         try:
-            from market_watcher import MarketWatcher
+            from ingestion.market_watcher import MarketWatcher
             watcher = MarketWatcher()
         except Exception:
             watcher = None

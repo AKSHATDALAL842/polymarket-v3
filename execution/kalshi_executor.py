@@ -19,9 +19,9 @@ from dataclasses import dataclass
 import httpx
 
 import config
-import logger as lg
-from edge_model import Signal
-from kalshi_markets import _get_auth_headers, get_kalshi_ticker
+from observability import logger as lg
+from signal.edge_model import Signal
+from ingestion.kalshi_markets import _get_auth_headers, get_kalshi_ticker
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _compute_kalshi_order(signal: Signal) -> tuple[int, int, str]:
 
 def _dry_run(signal: Signal, exec_start: float):
     """Import ExecutionResult lazily to avoid circular imports."""
-    from executor import ExecutionResult, _log_trade
+    from execution.executor import ExecutionResult, _log_trade
     latency = int((time.monotonic() - exec_start) * 1000)
     total_latency = signal.news_latency_ms + signal.classification_latency_ms + latency
     trade_id = _log_trade(
@@ -91,9 +91,9 @@ def _dry_run(signal: Signal, exec_start: float):
 # ── Live execution ─────────────────────────────────────────────────────────────
 
 def _execute_live(signal: Signal, exec_start: float):
-    from executor import ExecutionResult, _log_trade
+    from execution.executor import ExecutionResult, _log_trade
 
-    headers = _get_auth_headers()
+    headers = _get_auth_headers(method="POST", path="/trade-api/v2/portfolio/orders")
     if not headers:
         log.error("[kalshi-executor] No auth credentials — cannot place order")
         return _err_result("error_no_auth", signal, exec_start)
@@ -169,7 +169,7 @@ def _execute_live(signal: Signal, exec_start: float):
 
 
 def _err_result(status: str, signal: Signal, exec_start: float):
-    from executor import ExecutionResult, _log_trade
+    from execution.executor import ExecutionResult, _log_trade
     latency = int((time.monotonic() - exec_start) * 1000)
     total_latency = signal.news_latency_ms + signal.classification_latency_ms + latency
     _log_trade(signal, status=status, order_id=None, fill_price=0.0,

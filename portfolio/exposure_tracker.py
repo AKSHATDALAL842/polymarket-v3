@@ -18,19 +18,19 @@ class ExposureTracker:
 
     def get_category_exposure(self, category: str) -> float:
         """Return current USD exposure in the given category."""
-        from risk import RiskManager
+        from portfolio.risk import RiskManager
         rm = RiskManager.instance()
         return rm._category_exposure.get(category, 0.0)
 
     def get_total_exposure(self) -> float:
         """Return total USD across all open positions."""
-        from risk import RiskManager
+        from portfolio.risk import RiskManager
         rm = RiskManager.instance()
         return sum(rm._open_positions.values())
 
     def get_open_position_count(self) -> int:
         """Return count of currently open positions."""
-        from risk import RiskManager
+        from portfolio.risk import RiskManager
         rm = RiskManager.instance()
         return len(rm._open_positions)
 

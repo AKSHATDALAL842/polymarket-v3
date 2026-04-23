@@ -4,8 +4,8 @@ import json
 import logging
 
 import config
-from scraper import NewsItem
-from markets import Market
+from ingestion.scraper import NewsItem
+from ingestion.markets import Market
 
 log = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def _extract_keywords(question: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    from scraper import scrape_all
+    from ingestion.scraper import scrape_all
 
     test_market = Market(
         condition_id="test",
