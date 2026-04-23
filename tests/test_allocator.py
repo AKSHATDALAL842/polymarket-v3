@@ -1,4 +1,3 @@
-# tests/test_allocator.py
 import pytest
 from alpha.signal import AlphaSignal, AggregatedSignal
 from portfolio.allocator import Allocator

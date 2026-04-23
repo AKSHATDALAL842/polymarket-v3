@@ -1,45 +1,25 @@
-# control/safety_guard.py
-"""
-Safety checks that must pass before enabling live trading.
-All checks are read-only — they do not modify state.
-"""
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-MAX_DRAWDOWN_FOR_LIVE = 0.20    # block live if drawdown > 20%
+MAX_DRAWDOWN_FOR_LIVE = 0.20  # block live trading if drawdown exceeds 20%
 
 
 @dataclass
 class SafetyCheckResult:
     safe: bool
-    reason: str   # "ok" if safe, else human-readable reason
+    reason: str
 
 
 class SafetyGuard:
-    """
-    Checks that must pass before enabling LIVE trading.
-    Currently enforces:
-      1. Max drawdown <= 20%
-      2. Not in risk cooldown
-    """
 
     def check(self) -> SafetyCheckResult:
-        """
-        Run all safety checks.
-        Returns SafetyCheckResult(safe=True, reason="ok") if all pass.
-        """
         drawdown_result = self._check_drawdown()
         if not drawdown_result.safe:
             return drawdown_result
-
-        cooldown_result = self._check_cooldown()
-        if not cooldown_result.safe:
-            return cooldown_result
-
-        return SafetyCheckResult(safe=True, reason="ok")
+        return self._check_cooldown()
 
     def _check_drawdown(self) -> SafetyCheckResult:
         try:

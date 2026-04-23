@@ -56,8 +56,7 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
 
     for m in items:
         try:
-            # Gamma API uses outcomePrices as a JSON string
-            outcome_prices = m.get("outcomePrices", "")
+            outcome_prices = m.get("outcomePrices", "")  # Gamma API returns this as a JSON string
             yes_price = 0.5
             no_price = 0.5
 
@@ -70,7 +69,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
                 except (json.JSONDecodeError, ValueError):
                     pass
 
-            # Also check tokens array
             tokens = m.get("tokens", m.get("clobTokenIds", []))
             if isinstance(tokens, str):
                 try:
@@ -78,7 +76,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
                 except json.JSONDecodeError:
                     tokens = []
 
-            # Build token list for order execution
             clob_token_ids = m.get("clobTokenIds", "")
             if isinstance(clob_token_ids, str):
                 try:
@@ -98,7 +95,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
             vol = float(m.get("volume", m.get("volumeNum", 0)) or 0)
             question = m.get("question", "")
 
-            # Skip resolved or low-info markets
             if yes_price in (0.0, 1.0) and vol == 0:
                 continue
 
@@ -116,7 +112,6 @@ def fetch_active_markets(limit: int = 50) -> list[Market]:
         except (KeyError, ValueError, TypeError):
             continue
 
-    # Sort by volume descending
     markets.sort(key=lambda x: x.volume, reverse=True)
     return markets
 

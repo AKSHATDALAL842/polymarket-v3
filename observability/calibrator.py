@@ -1,17 +1,3 @@
-"""
-Calibration System — tracks predicted vs actual outcomes with per-slice breakdowns.
-
-Tracks accuracy by:
-  - source (Twitter, Telegram, RSS)
-  - category (crypto, politics, ai, ...)
-  - confidence bucket (0.5-0.6, 0.6-0.7, 0.7-0.8, 0.8-0.9, 0.9-1.0)
-  - materiality bucket
-
-Outputs:
-  - calibration curves (predicted confidence vs actual accuracy per bucket)
-  - reliability scores
-  - Brier score (proper scoring rule: lower = better)
-"""
 from __future__ import annotations
 
 import logging
@@ -29,7 +15,6 @@ log = logging.getLogger(__name__)
 GAMMA_API = "https://gamma-api.polymarket.com"
 
 
-# ── Data classes ───────────────────────────────────────────────────────────────
 
 @dataclass
 class CalibrationBucket:
@@ -71,7 +56,6 @@ class CalibrationReport:
     recommendation: str
 
 
-# ── Resolution checker ─────────────────────────────────────────────────────────
 
 def check_resolutions() -> int:
     """
@@ -118,18 +102,14 @@ def check_resolutions() -> int:
             if not prices or len(prices) < 2:
                 continue
 
-            exit_price = float(prices[0])     # YES resolution price (0 or 1)
+            exit_price = float(prices[0])
             entry_price = float(trade["market_price"])
 
             resolved_yes = exit_price > 0.5
-
-            # What the model predicted
             cls = trade.get("classification", "neutral").upper()
             predicted_yes = cls == "YES"
-
             correct = predicted_yes == resolved_yes
 
-            # Log to calibration table
             logger.log_calibration(
                 trade_id=trade["id"],
                 classification=cls,
@@ -149,7 +129,6 @@ def check_resolutions() -> int:
     return resolved_count
 
 
-# ── Report generator ───────────────────────────────────────────────────────────
 
 CONF_BUCKETS = [(i/10, (i+1)/10) for i in range(5, 10)]   # 0.5–0.6, 0.6–0.7, ...
 
@@ -171,13 +150,11 @@ def get_report() -> CalibrationReport:
 
     trades = logger.get_recent_calibrated_trades(limit=500)
 
-    # ── Build confidence buckets ───────────────────────────────────────────────
     buckets = {
         (lo, hi): CalibrationBucket(predicted_low=lo, predicted_high=hi)
         for lo, hi in CONF_BUCKETS
     }
 
-    # ── Per-slice accumulators ─────────────────────────────────────────────────
     by_source: dict[str, dict] = defaultdict(lambda: {"n": 0, "correct": 0})
     by_category: dict[str, dict] = defaultdict(lambda: {"n": 0, "correct": 0})
 
@@ -186,12 +163,12 @@ def get_report() -> CalibrationReport:
     total = 0
 
     for trade in trades:
-        conf = float(trade.get("materiality", 0.5))     # use materiality as proxy if no raw confidence
+        conf = float(trade.get("materiality", 0.5))     # materiality is the closest proxy for raw confidence
         correct = bool(trade.get("correct", False))
         source = trade.get("news_source", "unknown")
         category = trade.get("category", "unknown")
 
-        predicted_prob = conf if correct else (1.0 - conf)   # heuristic
+        predicted_prob = conf if correct else (1.0 - conf)
         actual = 1.0 if correct else 0.0
 
         brier = (predicted_prob - actual) ** 2
@@ -222,7 +199,6 @@ def get_report() -> CalibrationReport:
             weight = bucket.n_predictions / total
             ece += weight * abs(bucket.calibration_error)
 
-    # Recommendation
     if overall_accuracy >= 0.65:
         rec = f"Strong edge ({overall_accuracy:.1%} accuracy). Brier={brier_score:.3f}. Consider modest size increase."
     elif overall_accuracy >= 0.55:
@@ -232,7 +208,6 @@ def get_report() -> CalibrationReport:
     else:
         rec = f"NEGATIVE edge ({overall_accuracy:.1%}). PAUSE live trading, audit classification prompts."
 
-    # Convert source/category accumulators to readable dicts
     def _acc_dict(d):
         return {
             k: {"accuracy": v["correct"] / v["n"] if v["n"] else 0, "n": v["n"]}
@@ -262,7 +237,6 @@ def print_report(report: CalibrationReport):
                   f"ECE: [bold]{report.ece:.3f}[/bold]")
     console.print(f"[yellow]{report.recommendation}[/yellow]\n")
 
-    # Confidence calibration curve
     if report.confidence_buckets:
         table = Table(title="Confidence Calibration Curve", header_style="bold green")
         table.add_column("Conf bucket")
@@ -283,7 +257,6 @@ def print_report(report: CalibrationReport):
             )
         console.print(table)
 
-    # By source
     if report.by_source:
         src_table = Table(title="Accuracy by Source", header_style="bold")
         src_table.add_column("Source")

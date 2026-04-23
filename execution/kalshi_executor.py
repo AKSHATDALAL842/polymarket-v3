@@ -1,14 +1,3 @@
-"""
-Kalshi Execution Engine — places orders on Kalshi's REST API v2.
-
-Routing: executor.py calls execute_kalshi() when signal.market.source == "kalshi".
-
-Key differences from Polymarket:
-  - Prices in cents (1–99), not floats
-  - Order unit is "contracts" (each contract = $0.01–$1.00 notional)
-  - Auth: JWT bearer token (email/password) or RSA key signing
-  - No blockchain signing required
-"""
 from __future__ import annotations
 
 import logging
@@ -26,19 +15,14 @@ from ingestion.kalshi_markets import _get_auth_headers, get_kalshi_ticker
 log = logging.getLogger(__name__)
 
 
-# ── Order sizing ───────────────────────────────────────────────────────────────
 
 def _compute_kalshi_order(signal: Signal) -> tuple[int, int, str]:
     """
     Returns (yes_price_cents, count, side).
-
-    Kalshi limit price:
-      YES buy → limit at just-above yes_bid  (inside spread)
-      NO  buy → equivalent YES price just-below yes_ask
-
+    YES buy → limit just above yes_bid; NO buy → (100 - yes_ask) + offset.
     count = floor(bet_amount / price_per_contract_usd)
     """
-    offset_cents = round(config.LIMIT_ORDER_OFFSET * 100)   # e.g. 1 cent
+    offset_cents = round(config.LIMIT_ORDER_OFFSET * 100)
 
     yes_bid_cents = round(signal.p_market * 100)
     yes_ask_cents = round((signal.p_market + signal.spread) * 100)
@@ -48,7 +32,6 @@ def _compute_kalshi_order(signal: Signal) -> tuple[int, int, str]:
         limit_cents = min(99, yes_bid_cents + offset_cents)
         price_per_contract = limit_cents / 100.0
     else:
-        # Buying NO: we pay (100 - yes_ask) cents per contract
         side = "no"
         no_price_cents = 100 - yes_ask_cents
         limit_cents = max(1, no_price_cents + offset_cents)
@@ -61,7 +44,6 @@ def _compute_kalshi_order(signal: Signal) -> tuple[int, int, str]:
     return limit_cents, count, side
 
 
-# ── Dry run ────────────────────────────────────────────────────────────────────
 
 def _dry_run(signal: Signal, exec_start: float):
     """Import ExecutionResult lazily to avoid circular imports."""
@@ -88,7 +70,6 @@ def _dry_run(signal: Signal, exec_start: float):
     )
 
 
-# ── Live execution ─────────────────────────────────────────────────────────────
 
 def _execute_live(signal: Signal, exec_start: float):
     from execution.executor import ExecutionResult, _log_trade
@@ -105,7 +86,7 @@ def _execute_live(signal: Signal, exec_start: float):
     body = {
         "ticker": ticker,
         "client_order_id": client_order_id,
-        "type": config.ORDER_TYPE,          # "limit" or "market"
+        "type": config.ORDER_TYPE,
         "action": "buy",
         "side": side,
         "yes_price": limit_cents,           # Kalshi always uses yes_price field
@@ -180,7 +161,6 @@ def _err_result(status: str, signal: Signal, exec_start: float):
     )
 
 
-# ── Public entry point ─────────────────────────────────────────────────────────
 
 def execute_kalshi(signal: Signal):
     """Called by executor.py when signal.market.source == 'kalshi'."""

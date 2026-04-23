@@ -28,7 +28,6 @@ BASE_WEIGHTS: dict[str, float] = {
     "economy":        0.05,
 }
 
-# Phrases that strongly indicate a high-signal post
 _HIGH_SIGNAL_PHRASES = {
     "announced", "announces", "approved", "approves",
     "banned", "bans", "launched", "launches", "launch",
@@ -40,7 +39,6 @@ _HIGH_SIGNAL_PHRASES = {
     "indicted", "arrested", "charged", "sanctions",
 }
 
-# Phrases that indicate low-signal discussion posts to skip
 _LOW_SIGNAL_PHRASES = {
     "what do you think", "opinion", "discussion",
     "should i", "should I", "thoughts", "thoughts?",
@@ -73,7 +71,6 @@ def _ensure_table():
             last_updated TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
-    # Seed rows for all known subreddits
     for sub, w in BASE_WEIGHTS.items():
         conn.execute(
             """INSERT OR IGNORE INTO subreddit_stats (subreddit, base_weight, current_weight)
@@ -94,12 +91,10 @@ def is_high_signal(title: str) -> bool:
     """
     lower = title.lower()
 
-    # Reject explicit low-signal patterns
     for phrase in _LOW_SIGNAL_PHRASES:
         if phrase in lower:
             return False
 
-    # Accept if any high-signal phrase is present
     for phrase in _HIGH_SIGNAL_PHRASES:
         if phrase.lower() in lower:
             return True

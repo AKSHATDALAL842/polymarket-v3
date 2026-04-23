@@ -1,24 +1,3 @@
-"""
-REST + WebSocket API — FastAPI server that runs the pipeline as a background task.
-
-Endpoints
----------
-GET  /health                  — liveness check
-GET  /status                  — pipeline status, uptime, risk state
-GET  /signals/recent          — last N signals from SQLite
-GET  /markets                 — currently tracked markets with prices
-GET  /stats                   — trade stats, calibration accuracy, latency
-GET  /sources                 — active news source status + event counts
-GET  /subreddit-stats         — Reddit adaptive weight table
-GET  /prediction?event=<text> — on-demand signal analysis for a free-text query
-WS   /ws/signals              — real-time signal stream (JSON events)
-
-Run:
-    pip install fastapi uvicorn
-    python api.py
-    # or
-    uvicorn api:app --host 0.0.0.0 --port 8000
-"""
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +11,6 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-# ── Pipeline singleton ────────────────────────────────────────────────────────
 
 _pipeline = None
 
@@ -45,7 +23,6 @@ def _get_pipeline():
     return _pipeline
 
 
-# ── App lifespan: start pipeline in background ────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app):
@@ -56,7 +33,6 @@ async def lifespan(app):
     log.info("[api] Shutting down")
 
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
 
 try:
     from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
@@ -85,14 +61,12 @@ app.add_middleware(
 )
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-# ── Pipeline status ───────────────────────────────────────────────────────────
 
 @app.get("/status")
 async def status():
@@ -100,7 +74,6 @@ async def status():
     return pipeline.status()
 
 
-# ── Recent signals ────────────────────────────────────────────────────────────
 
 @app.get("/signals/recent")
 async def signals_recent(limit: int = Query(default=20, ge=1, le=200)):
@@ -109,7 +82,6 @@ async def signals_recent(limit: int = Query(default=20, ge=1, le=200)):
     return {"count": len(trades), "signals": trades}
 
 
-# ── Tracked markets ───────────────────────────────────────────────────────────
 
 @app.get("/markets")
 async def markets(
@@ -145,7 +117,6 @@ async def markets(
     }
 
 
-# ── Stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/stats")
 async def stats(
@@ -165,7 +136,6 @@ async def stats(
     return result
 
 
-# ── Portfolio state ───────────────────────────────────────────────────────────
 
 @app.get("/portfolio")
 async def portfolio_state():
@@ -173,7 +143,6 @@ async def portfolio_state():
     return get_portfolio().get_portfolio_state()
 
 
-# ── Categories ────────────────────────────────────────────────────────────────
 
 @app.get("/categories")
 async def categories_info():
@@ -193,7 +162,6 @@ async def categories_info():
     }
 
 
-# ── News source status ────────────────────────────────────────────────────────
 
 @app.get("/sources")
 async def sources():
@@ -216,7 +184,6 @@ async def sources():
     }
 
 
-# ── Reddit adaptive weights ───────────────────────────────────────────────────
 
 @app.get("/subreddit-stats")
 async def subreddit_stats():
@@ -225,7 +192,6 @@ async def subreddit_stats():
     return {"subreddits": rows}
 
 
-# ── On-demand prediction ──────────────────────────────────────────────────────
 
 @app.get("/prediction")
 async def prediction(event: str = Query(..., description="Free-text news headline to analyze")):
@@ -298,7 +264,6 @@ async def prediction(event: str = Query(..., description="Free-text news headlin
     }
 
 
-# ── WebSocket real-time signal stream ─────────────────────────────────────────
 
 @app.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket):
@@ -338,7 +303,6 @@ async def _ws_ping(websocket: WebSocket):
             break
 
 
-# ── Trading Mode Control ─────────────────────────────────────────────────────
 
 class TradingModeRequest(BaseModel):
     mode: str       # "LIVE" | "DRY_RUN"
@@ -375,7 +339,6 @@ async def get_trading_status():
     }
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import os

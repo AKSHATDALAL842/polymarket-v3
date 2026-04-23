@@ -1,9 +1,3 @@
-"""
-Category registry — keyword maps, RSS feeds, newsapi queries, reddit subs,
-and twitter keywords per category.
-
-No side effects on import.
-"""
 from __future__ import annotations
 
 CATEGORIES: dict[str, dict] = {

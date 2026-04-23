@@ -165,7 +165,7 @@ def _semantic_match(
         return []
 
     matrix = np.stack([e.vector for e in entries])  # (N, D), already normalized
-    scores = matrix @ query_vec                      # (N,) cosine similarity
+    scores = matrix @ query_vec
 
     ranked_idx = np.argsort(-scores)
     results = []

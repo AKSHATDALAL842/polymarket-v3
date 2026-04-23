@@ -1,14 +1,3 @@
-"""
-Realistic Backtester — validates V3 strategy against resolved markets.
-
-Key realism improvements over V2:
-  - Simulated latency (1–5s random delay before "seeing" the price)
-  - Slippage model: entry price = mid + spread/2 + market_impact
-  - Partial fill simulation (not always 100% fill at limit price)
-  - Price evolution: exit price sampled from outcome distribution, not final binary
-
-NOT used for live decisions — purely for strategy validation.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +23,6 @@ console = Console()
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 
-# ── Simulation parameters ──────────────────────────────────────────────────────
 
 SIM_LATENCY_MIN = 1.0          # seconds
 SIM_LATENCY_MAX = 5.0
@@ -43,7 +31,6 @@ SIM_PARTIAL_FILL_PROB = 0.15   # 15% chance of partial fill
 SIM_PARTIAL_FILL_FRACTION = 0.5
 
 
-# ── Result types ───────────────────────────────────────────────────────────────
 
 @dataclass
 class BacktestTrade:
@@ -89,7 +76,6 @@ class BacktestReport:
     trades: list[BacktestTrade] = field(default_factory=list)
 
 
-# ── Data fetching ──────────────────────────────────────────────────────────────
 
 def fetch_resolved_markets(limit: int = 50, category: str | None = None) -> list[dict]:
     """Fetch recently resolved niche markets from Gamma API."""
@@ -139,7 +125,6 @@ def fetch_resolved_markets(limit: int = 50, category: str | None = None) -> list
     return markets
 
 
-# ── Simulation helpers ─────────────────────────────────────────────────────────
 
 def _simulate_latency() -> tuple[float, int]:
     """Returns (latency_seconds, latency_ms)."""
@@ -154,14 +139,13 @@ def _simulate_entry_price(mid: float, side: str) -> tuple[float, float]:
     """
     spread = mid * (SIM_SPREAD_BPS / 10000)
     half_spread = spread / 2
-    # Additional random market impact (thin book)
     impact = random.uniform(0, half_spread * 0.5)
 
     if side == "YES":
-        entry = mid + half_spread + impact      # buying YES at ask + impact
+        entry = mid + half_spread + impact
     else:
-        entry = mid - half_spread - impact      # effectively worse NO price
-        entry = 1.0 - entry                     # convert to YES-equivalent
+        entry = mid - half_spread - impact
+        entry = 1.0 - entry
 
     entry = max(0.01, min(0.99, entry))
     slippage = abs(entry - mid)
@@ -219,7 +203,6 @@ def _compute_pnl(
     return round(pnl, 4), won
 
 
-# ── Metrics ────────────────────────────────────────────────────────────────────
 
 def _compute_sharpe(pnls: list[float]) -> float:
     if len(pnls) < 2:
@@ -253,7 +236,6 @@ def _compute_brier(trades: list[BacktestTrade]) -> float:
     return total / len(trades)
 
 
-# ── Main backtest ──────────────────────────────────────────────────────────────
 
 async def run_backtest_async(
     limit: int = 30,
@@ -285,8 +267,7 @@ async def run_backtest_async(
         resolved_yes = resolved_yes_price > 0.5
         vol = m_data["volume"]
 
-        # Use mid-market price as entry (simulate seeing it at signal time)
-        true_mid = 0.5   # most niche markets start near 50% prior to events
+        true_mid = 0.5
 
         market = Market(
             condition_id=m_data["condition_id"],
@@ -300,8 +281,6 @@ async def run_backtest_async(
             tokens=[],
         )
 
-        # Generate a directional synthetic headline based on how the market resolved
-        # This simulates a news event that correctly reflects the eventual outcome
         if resolved_yes:
             headline = f"Reports indicate YES outcome likely: {question[:80]}"
         else:
@@ -309,10 +288,8 @@ async def run_backtest_async(
 
         console.print(f"  [{i+1}/{len(resolved)}] {question[:55]}...", end="\r")
 
-        # Simulate latency (the system "sees" this news after a delay)
         _latency_secs, latency_ms = _simulate_latency()
 
-        # Run V3 classification
         try:
             cls = await classify_async(headline, market, source="backtest")
         except Exception as e:
@@ -320,13 +297,11 @@ async def run_backtest_async(
             skipped += 1
             continue
 
-        # Edge model
         signal = compute_edge(market, cls)
         if signal is None:
             skipped += 1
             continue
 
-        # Simulate execution
         entry_price, slippage = _simulate_entry_price(true_mid, signal.side)
         exit_price = _simulate_exit_price(resolved_yes, entry_price)
         fill_fraction = _simulate_partial_fill(signal.bet_amount)
@@ -403,7 +378,6 @@ def run_backtest(limit: int = 30, category: Optional[str] = None) -> BacktestRep
     return asyncio.run(run_backtest_async(limit, category))
 
 
-# ── Report printer ─────────────────────────────────────────────────────────────
 
 def _print_report(report: BacktestReport):
     console.print()

@@ -27,7 +27,6 @@ from execution.executor import execute_trade
 
 console = Console()
 
-# --- Color Palette ---
 ACCENT = "bright_green"
 DIM = "bright_black"
 WARN = "yellow"
@@ -62,7 +61,6 @@ def run_scan_cycle():
     state.scanning = True
     state.scan_status = "Scraping news..."
 
-    # Step 1: Scrape news
     news = scrape_all()
     state.headlines_found = len(news)
     state.latest_headlines = [
@@ -70,14 +68,12 @@ def run_scan_cycle():
         for n in news[:8]
     ]
 
-    # Step 2: Fetch markets
     state.scan_status = "Fetching markets..."
     all_markets = fetch_active_markets(limit=100)
     markets = filter_by_categories(all_markets)[:12]
     state.markets_scanned = len(markets)
     state.latest_markets = markets
 
-    # Step 3: Score and detect edge
     signals = []
     scores = {}
     for i, market in enumerate(markets):
@@ -223,7 +219,6 @@ def render_scanner() -> Panel:
         content.add_row(f"[{DIM}]Waiting for first scan...[/{DIM}]", "", "", "", "", "", "")
         return Panel(content, title="[bold]MARKET SCANNER[/bold]  ·  Claude Confidence vs Market Odds", border_style="bright_green", box=box.ROUNDED)
 
-    # Show signals first
     signal_questions = set()
     for sig in state.latest_signals[:5]:
         m = sig["market"]
@@ -251,7 +246,6 @@ def render_scanner() -> Panel:
             status_str,
         )
 
-    # Fill with non-signal markets
     for m in state.latest_markets:
         if m.question in signal_questions:
             continue
@@ -344,7 +338,6 @@ def run_dashboard(scan_interval: float = 60.0):
     """Launch the live dashboard. Scans on a configurable interval."""
     layout = make_layout()
 
-    # Initial render
     layout["header"].update(render_header())
     layout["status"].update(render_status())
     layout["performance"].update(render_performance())

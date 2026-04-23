@@ -1,7 +1,3 @@
-"""
-Paper trading engine — $1M virtual portfolio.
-Singleton via get_portfolio(). Persists open positions to SQLite on every trade.
-"""
 from __future__ import annotations
 
 import logging
@@ -45,19 +41,15 @@ class Portfolio:
         self._peak_value: float = initial_balance
         self._realized_pnl: float = 0.0
 
-    # ── Trade simulation ─────────────────────────────────────────────────────
-
     def simulate_trade(self, signal) -> "ExecutionResult":
         from execution.executor import ExecutionResult, _log_trade
         import time
 
         exec_start = time.monotonic()
-
         market = signal.market
         market_id = market.condition_id
         platform = getattr(market, "source", "polymarket")
         category = getattr(market, "category", "unknown")
-
         entry_price = signal.p_market
         bet_amount = signal.bet_amount
 
@@ -67,7 +59,6 @@ class Portfolio:
             no_price = 1.0 - entry_price
             contracts = bet_amount / no_price if no_price > 0 else 0.0
 
-        # Guard: if position already open for this market, skip (don't double-open)
         if market_id in self.positions and self.positions[market_id].status == "open":
             log.warning(
                 f"[portfolio] Skipping duplicate open position for market {market_id}: "
@@ -75,118 +66,76 @@ class Portfolio:
             )
             from execution.executor import ExecutionResult
             return ExecutionResult(
-                trade_id=None,
-                status="rejected_duplicate_position",
-                order_id=None,
-                filled_size=0.0,
-                fill_price=signal.p_market,
-                slippage=0.0,
-                latency_ms=0,
+                trade_id=None, status="rejected_duplicate_position", order_id=None,
+                filled_size=0.0, fill_price=signal.p_market, slippage=0.0, latency_ms=0,
             )
 
         self.balance -= bet_amount
         now = datetime.now(timezone.utc)
 
         position_id = lg.log_position(
-            market_id=market_id,
-            market_question=market.question,
-            platform=platform,
-            category=category,
-            side=signal.side,
-            entry_price=entry_price,
-            size_usd=bet_amount,
-            contracts=contracts,
-            opened_at=now.isoformat(),
+            market_id=market_id, market_question=market.question,
+            platform=platform, category=category, side=signal.side,
+            entry_price=entry_price, size_usd=bet_amount,
+            contracts=contracts, opened_at=now.isoformat(),
         )
 
-        pos = Position(
-            position_id=position_id,
-            market_id=market_id,
-            market_question=market.question,
-            platform=platform,
-            category=category,
-            side=signal.side,
-            entry_price=entry_price,
-            size_usd=bet_amount,
-            contracts=contracts,
-            opened_at=now,
+        self.positions[market_id] = Position(
+            position_id=position_id, market_id=market_id,
+            market_question=market.question, platform=platform,
+            category=category, side=signal.side, entry_price=entry_price,
+            size_usd=bet_amount, contracts=contracts, opened_at=now,
         )
-        self.positions[market_id] = pos
 
         latency = int((time.monotonic() - exec_start) * 1000)
         total_latency = signal.news_latency_ms + signal.classification_latency_ms + latency
 
         trade_id = _log_trade(
-            signal,
-            status="paper",
-            order_id=None,
-            fill_price=entry_price,
-            filled_size=bet_amount,
-            slippage=0.0,
-            latency_ms=total_latency,
+            signal, status="paper", order_id=None, fill_price=entry_price,
+            filled_size=bet_amount, slippage=0.0, latency_ms=total_latency,
         )
 
         log.info(
             f"[portfolio][PAPER][{category}][{platform}] {signal.side} ${bet_amount:.2f} "
             f"'{market.question[:40]}' ev={signal.ev:.3f}"
         )
-
         return ExecutionResult(
-            trade_id=trade_id,
-            status="paper",
-            order_id=None,
-            filled_size=bet_amount,
-            fill_price=entry_price,
-            slippage=0.0,
-            latency_ms=total_latency,
+            trade_id=trade_id, status="paper", order_id=None,
+            filled_size=bet_amount, fill_price=entry_price, slippage=0.0, latency_ms=total_latency,
         )
 
-    # ── P&L ──────────────────────────────────────────────────────────────────
-
     def mark_to_market(self, market_id: str, current_price: float) -> float:
-        """Return unrealized P&L for an open position using current YES price."""
         pos = self.positions.get(market_id)
         if pos is None or pos.status != "open":
             return 0.0
         if pos.side == "YES":
             return pos.contracts * (current_price - pos.entry_price)
-        else:
-            return pos.contracts * (pos.entry_price - current_price)
+        return pos.contracts * (pos.entry_price - current_price)
 
     def close_position(self, market_id: str, exit_price: float) -> float:
-        """Close an open position. Returns realized P&L."""
         pos = self.positions.get(market_id)
         if pos is None or pos.status != "open":
             return 0.0
-
         realized_pnl = self.mark_to_market(market_id, exit_price)
         self.balance += pos.size_usd + realized_pnl
         self._realized_pnl += realized_pnl
-
         now = datetime.now(timezone.utc)
         pos.status = "closed"
         pos.exit_price = exit_price
         pos.realized_pnl = realized_pnl
         pos.closed_at = now
-
         lg.update_position_closed(
-            position_id=pos.position_id,
-            exit_price=exit_price,
-            realized_pnl=realized_pnl,
-            closed_at=now.isoformat(),
+            position_id=pos.position_id, exit_price=exit_price,
+            realized_pnl=realized_pnl, closed_at=now.isoformat(),
         )
-
         daily_return = realized_pnl / pos.size_usd if pos.size_usd > 0 else 0.0
         self.daily_returns.append(daily_return)
-
         current_value = self._total_value()
         if current_value > self._peak_value:
             self._peak_value = current_value
-
         return realized_pnl
 
     def get_unrealized_pnl(self) -> float:
-        """Sum mark_to_market across all open positions using watcher snapshots."""
         total = 0.0
         try:
             from ingestion.market_watcher import MarketWatcher
@@ -205,7 +154,6 @@ class Portfolio:
         return self.balance + self.get_unrealized_pnl()
 
     def get_portfolio_state(self) -> dict:
-        # Build open positions list with live unrealized P&L
         open_positions = []
         try:
             from ingestion.market_watcher import MarketWatcher
@@ -222,27 +170,19 @@ class Portfolio:
             else:
                 current_price = p.entry_price
             open_positions.append({
-                "market_id": p.market_id,
-                "question": p.market_question,
-                "platform": p.platform,
-                "category": p.category,
-                "side": p.side,
-                "entry_price": p.entry_price,
-                "size_usd": p.size_usd,
-                "contracts": p.contracts,
-                "opened_at": p.opened_at.isoformat(),
+                "market_id": p.market_id, "question": p.market_question,
+                "platform": p.platform, "category": p.category, "side": p.side,
+                "entry_price": p.entry_price, "size_usd": p.size_usd,
+                "contracts": p.contracts, "opened_at": p.opened_at.isoformat(),
                 "unrealized_pnl": self.mark_to_market(p.market_id, current_price),
             })
-        closed_db = lg.get_closed_positions(limit=100)
 
+        closed_db = lg.get_closed_positions(limit=100)
         closed_count = len(closed_db)
         wins = sum(1 for p in closed_db if (p.get("realized_pnl") or 0) > 0)
         win_rate = wins / closed_count if closed_count > 0 else 0.0
-
         unrealized = self.get_unrealized_pnl()
         total_value = self.balance + unrealized
-
-        by_category = lg.get_category_stats()
 
         return {
             "balance": round(self.balance, 2),
@@ -256,7 +196,7 @@ class Portfolio:
             "sharpe_ratio": self.get_sharpe_ratio(),
             "max_drawdown": round(self.get_max_drawdown(), 4),
             "total_return_pct": round((total_value - self.initial_balance) / self.initial_balance * 100, 3),
-            "by_category": by_category,
+            "by_category": lg.get_category_stats(),
         }
 
     def get_sharpe_ratio(self) -> Optional[float]:
@@ -266,45 +206,34 @@ class Portfolio:
         mean = sum(self.daily_returns) / len(self.daily_returns)
         variance = sum((r - mean) ** 2 for r in self.daily_returns) / (len(self.daily_returns) - 1)
         std = math.sqrt(variance)
-        if std == 0:
-            return None
-        return round(mean / std * math.sqrt(252), 4)
+        return round(mean / std * math.sqrt(252), 4) if std > 0 else None
 
     def get_max_drawdown(self) -> float:
-        """Peak-to-trough as fraction of peak portfolio value. Range [0, 1]."""
+        """Peak-to-trough as fraction of peak value. Range [0, 1]."""
         if self._peak_value <= 0:
             return 0.0
-        current = self._total_value()
-        drawdown = (self._peak_value - current) / self._peak_value
-        return max(0.0, drawdown)
+        return max(0.0, (self._peak_value - self._total_value()) / self._peak_value)
 
 
 def get_portfolio() -> Portfolio:
-    """Module-level singleton. Lazily initialized on first call."""
+    """Lazily initialized module-level singleton."""
     global _portfolio
     if _portfolio is None:
-        _portfolio = Portfolio(
-            balance=config.PAPER_BALANCE,
-            initial_balance=config.PAPER_BALANCE,
-        )
+        _portfolio = Portfolio(balance=config.PAPER_BALANCE, initial_balance=config.PAPER_BALANCE)
         _restore_open_positions(_portfolio)
     return _portfolio
 
 
 def _restore_open_positions(portfolio: Portfolio):
-    """Load open positions from SQLite into the in-memory portfolio on startup."""
+    """Load open positions from SQLite into memory on startup."""
     try:
         rows = lg.get_open_positions()
         for row in rows:
             pos = Position(
-                position_id=row["id"],
-                market_id=row["market_id"],
-                market_question=row["market_question"],
-                platform=row["platform"],
-                category=row["category"],
-                side=row["side"],
-                entry_price=row["entry_price"],
-                size_usd=row["size_usd"],
+                position_id=row["id"], market_id=row["market_id"],
+                market_question=row["market_question"], platform=row["platform"],
+                category=row["category"], side=row["side"],
+                entry_price=row["entry_price"], size_usd=row["size_usd"],
                 contracts=row["contracts"] or 0.0,
                 opened_at=datetime.fromisoformat(row["opened_at"]),
             )

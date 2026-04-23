@@ -108,7 +108,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_positions_market_id ON positions(market_id);
         CREATE INDEX IF NOT EXISTS idx_positions_status    ON positions(status);
     """)
-    # Add V2 columns to existing trades table if missing
     _migrate_v2_columns(conn)
     conn.close()
 

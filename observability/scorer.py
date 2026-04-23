@@ -84,7 +84,6 @@ def score_market(market: Market, news: list[NewsItem]) -> dict:
             )
             text = response.content[0].text.strip()
 
-        # Extract JSON from response (handle markdown code blocks)
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):

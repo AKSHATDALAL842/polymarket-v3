@@ -1,9 +1,3 @@
-# alpha/signal.py
-"""
-Unified Alpha Signal schema for the multi-strategy trading engine.
-All signal sources (news, momentum) produce AlphaSignal objects.
-The ensemble layer combines them into AggregatedSignal for portfolio decisions.
-"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 import time
@@ -11,22 +5,21 @@ import time
 _VALID_DIRECTIONS = ("YES", "NO")
 _VALID_HORIZONS   = ("5m", "1h", "1d")
 _VALID_STRATEGIES = ("news", "momentum")
-_VALID_MULTIPLIERS = (0.4, 0.6, 1.0)  # conflict, single, agreement
+_VALID_MULTIPLIERS = (0.4, 0.6, 1.0)  # conflict, single-strategy, agreement
 
 
 @dataclass
 class AlphaSignal:
-    """A single directional signal from one alpha strategy."""
     market_id: str
     market_question: str
     direction: str          # "YES" | "NO"
     confidence: float       # [0.0, 1.0]
-    expected_edge: float    # estimated EV (e.g. 0.05 = 5 cents per dollar)
+    expected_edge: float    # estimated EV, e.g. 0.05 = 5 cents per dollar
     horizon: str            # "5m" | "1h" | "1d"
     strategy: str           # "news" | "momentum"
     timestamp: float = field(default_factory=time.time)
-    market: object = field(default=None, repr=False)     # markets.Market reference
-    raw_signal: object = field(default=None, repr=False) # edge_model.Signal reference
+    market: object = field(default=None, repr=False)     # ingestion.markets.Market
+    raw_signal: object = field(default=None, repr=False) # signal.edge_model.Signal
 
     def __post_init__(self):
         if self.direction not in _VALID_DIRECTIONS:
@@ -44,22 +37,21 @@ class AlphaSignal:
 @dataclass
 class AggregatedSignal:
     """
-    Combined signal from multiple alpha strategies targeting the same market.
-    Produced by ensemble.combine(). This is what PortfolioManager receives.
+    Combined signal from multiple alpha strategies for the same market.
+    Produced by ensemble.combine(). Received by PortfolioManager.
 
-    size_multiplier is always one of: 1.0 (agreement), 0.6 (single strategy), 0.4 (conflict).
-    These values are exact IEEE 754 floats — no rounding error.
+    size_multiplier: 1.0=strategies agree, 0.6=single strategy, 0.4=conflict.
     """
     market_id: str
     market_question: str
-    direction: str          # "YES" | "NO" — majority weighted vote result
-    confidence: float       # weighted aggregate confidence
-    expected_edge: float    # weighted aggregate edge
-    size_multiplier: float  # 1.0=agreement, 0.6=single-strategy, 0.4=conflict
-    strategies: list        # list[str] of strategy names that contributed
-    signals: list           # list[AlphaSignal] that were combined
+    direction: str          # "YES" | "NO"
+    confidence: float
+    expected_edge: float
+    size_multiplier: float  # 1.0 | 0.6 | 0.4
+    strategies: list
+    signals: list
     timestamp: float = field(default_factory=time.time)
-    market: object = field(default=None, repr=False)  # markets.Market reference
+    market: object = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.direction not in _VALID_DIRECTIONS:
@@ -73,10 +65,8 @@ class AggregatedSignal:
 
     @property
     def is_strong(self) -> bool:
-        """True if multiple strategies agree (not a conflict, more than one strategy)."""
         return self.size_multiplier == 1.0 and len(self.strategies) > 1
 
     @property
     def has_conflict(self) -> bool:
-        """True if strategies disagree on direction."""
         return self.size_multiplier == 0.4

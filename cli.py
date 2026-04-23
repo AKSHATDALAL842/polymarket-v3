@@ -28,19 +28,16 @@ from rich.table import Table
 
 console = Console()
 
-# Configure logging for the CLI — show pipeline/classifier/watcher/matcher/edge messages
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(message)s",
     datefmt="%H:%M:%S",
 )
-# Silence noisy third-party loggers
 for _noisy in ["httpx", "httpcore", "openai._base_client", "urllib3",
                "sentence_transformers", "transformers", "huggingface_hub"]:
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
-# Load HF_TOKEN from .env so HuggingFace doesn't warn about unauthenticated requests
 from dotenv import load_dotenv
 load_dotenv()
 if os.getenv("HF_TOKEN"):
@@ -159,7 +156,6 @@ def cmd_verify(args):
     console.print(Panel("[bold]POLYMARKET PIPELINE V2 — VERIFICATION[/bold]", style="bright_green"))
     all_good = True
 
-    # 1. Python version
     v = sys.version_info
     py_ok = v.major == 3 and v.minor >= 9
     status = "[bright_green]PASS[/bright_green]" if py_ok else "[red]FAIL[/red]"
@@ -167,7 +163,6 @@ def cmd_verify(args):
     if not py_ok:
         all_good = False
 
-    # 2. Dependencies
     deps_ok = True
     for mod in ["anthropic", "feedparser", "httpx", "rich", "dotenv", "websockets", "tweepy", "aiohttp"]:
         try:
@@ -179,7 +174,6 @@ def cmd_verify(args):
     if deps_ok:
         console.print(f"  [bright_green]PASS[/bright_green]  All dependencies installed")
 
-    # 3. .env exists
     import os
     env_exists = os.path.exists(os.path.join(os.path.dirname(__file__), ".env"))
     status = "[bright_green]PASS[/bright_green]" if env_exists else "[red]FAIL[/red] — run: cp .env.example .env"
@@ -187,7 +181,6 @@ def cmd_verify(args):
     if not env_exists:
         all_good = False
 
-    # 4. Anthropic API key
     import config
     has_key = bool(config.ANTHROPIC_API_KEY) and config.ANTHROPIC_API_KEY != "sk-ant-..."
     if has_key:
@@ -207,7 +200,6 @@ def cmd_verify(args):
         console.print(f"  [red]FAIL[/red]  Anthropic API key not set")
         all_good = False
 
-    # 5. News scraper (RSS)
     try:
         from ingestion.scraper import scrape_rss
         items = scrape_rss(config.RSS_FEEDS[0], 12)
@@ -215,21 +207,18 @@ def cmd_verify(args):
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  RSS scraper — {e}")
 
-    # 6. Twitter API (optional)
     has_twitter = bool(config.TWITTER_BEARER_TOKEN)
     if has_twitter:
         console.print(f"  [bright_green]PASS[/bright_green]  Twitter bearer token set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Twitter API (optional — enables real-time news stream)")
 
-    # 7. Telegram (optional)
     has_telegram = bool(config.TELEGRAM_BOT_TOKEN)
     if has_telegram:
         console.print(f"  [bright_green]PASS[/bright_green]  Telegram bot token set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Telegram bot (optional — enables channel monitoring)")
 
-    # 8. Polymarket API
     try:
         from ingestion.markets import fetch_active_markets
         mkts = fetch_active_markets(limit=5)
@@ -237,7 +226,6 @@ def cmd_verify(args):
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  Polymarket API — {e}")
 
-    # 9. Niche market filter
     try:
         from ingestion.markets import fetch_active_markets, filter_by_categories
         all_m = fetch_active_markets(limit=100)
@@ -247,14 +235,12 @@ def cmd_verify(args):
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  Niche filter — {e}")
 
-    # 10. Polymarket trading credentials (optional)
     has_poly = bool(config.POLYMARKET_API_KEY)
     if has_poly:
         console.print(f"  [bright_green]PASS[/bright_green]  Polymarket trading credentials set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Polymarket trading credentials (optional — needed for --live)")
 
-    # 11. SQLite
     try:
         from observability import logger as _
         console.print(f"  [bright_green]PASS[/bright_green]  SQLite database (V2 schema)")
@@ -262,7 +248,6 @@ def cmd_verify(args):
         console.print(f"  [red]FAIL[/red]  SQLite — {e}")
         all_good = False
 
-    # Summary
     console.print()
     if all_good:
         console.print(Panel(
@@ -394,7 +379,6 @@ def main():
     parser = argparse.ArgumentParser(description="Polymarket Pipeline V2")
     sub = parser.add_subparsers(dest="command")
 
-    # watch (V2)
     p_watch = sub.add_parser("watch", help="V2: Event-driven pipeline (real-time)")
     p_watch.add_argument("--live", action="store_true", help="Enable live trading")
     p_watch.add_argument("--threshold", type=float, default=None, help="Materiality threshold override")
@@ -406,7 +390,6 @@ def main():
     )
     p_watch.set_defaults(func=cmd_watch)
 
-    # run (V1)
     p_run = sub.add_parser("run", help="V1: Synchronous pipeline (RSS-based)")
     p_run.add_argument("--live", action="store_true", help="Enable live trading")
     p_run.add_argument("--max", type=int, default=10, help="Max markets to scan")
@@ -414,45 +397,36 @@ def main():
     p_run.add_argument("--threshold", type=float, default=None, help="Edge threshold override")
     p_run.set_defaults(func=cmd_run)
 
-    # dashboard
     p_dash = sub.add_parser("dashboard", help="Launch live terminal dashboard")
     p_dash.add_argument("--speed", type=float, default=60.0, help="Seconds between scan cycles")
     p_dash.set_defaults(func=cmd_dashboard)
 
-    # backtest
     p_bt = sub.add_parser("backtest", help="Backtest V2 strategy")
     p_bt.add_argument("--limit", type=int, default=30, help="Number of resolved markets")
     p_bt.add_argument("--category", type=str, default=None, help="Filter by category")
     p_bt.set_defaults(func=cmd_backtest)
 
-    # calibrate
     p_cal = sub.add_parser("calibrate", help="Show classification accuracy report")
     p_cal.set_defaults(func=cmd_calibrate)
 
-    # niche
     p_niche = sub.add_parser("niche", help="Browse niche markets (volume-filtered)")
     p_niche.set_defaults(func=cmd_niche)
 
-    # verify
     p_verify = sub.add_parser("verify", help="Check API keys and connections")
     p_verify.set_defaults(func=cmd_verify)
 
-    # scrape
     p_scrape = sub.add_parser("scrape", help="Test the news scraper")
     p_scrape.add_argument("--hours", type=int, default=6, help="Lookback hours")
     p_scrape.set_defaults(func=cmd_scrape)
 
-    # markets
     p_markets = sub.add_parser("markets", help="View all available markets")
     p_markets.add_argument("--max", type=int, default=50, help="Max markets to fetch")
     p_markets.set_defaults(func=cmd_markets)
 
-    # trades
     p_trades = sub.add_parser("trades", help="View trade log")
     p_trades.add_argument("--limit", type=int, default=20, help="Number of trades to show")
     p_trades.set_defaults(func=cmd_trades)
 
-    # stats
     p_stats = sub.add_parser("stats", help="Performance statistics")
     p_stats.set_defaults(func=cmd_stats)
 

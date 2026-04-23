@@ -1,4 +1,3 @@
-# tests/test_trading_mode.py
 import pytest
 import config
 from control.trading_mode import TradingMode

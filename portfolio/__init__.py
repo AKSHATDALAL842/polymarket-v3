@@ -1,9 +1,7 @@
-# portfolio/__init__.py
 from portfolio.allocator import Allocator
 from portfolio.risk_engine import RiskEngine, RiskDecision
 from portfolio.exposure_tracker import ExposureTracker
 from portfolio.portfolio_manager import PortfolioManager
-# Re-export paper trading module so existing code stays compatible
 from portfolio._paper import Portfolio, Position, get_portfolio
 
 __all__ = [

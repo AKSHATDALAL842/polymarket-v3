@@ -1,4 +1,3 @@
-# tests/test_ensemble.py
 import pytest
 from alpha.signal import AlphaSignal
 from alpha.ensemble import combine

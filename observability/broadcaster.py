@@ -1,9 +1,3 @@
-"""
-In-process signal broadcast bus.
-
-Pipeline calls broadcast() after each signal fires.
-FastAPI WebSocket handlers call subscribe() / unsubscribe() to receive signals.
-"""
 from __future__ import annotations
 
 import asyncio

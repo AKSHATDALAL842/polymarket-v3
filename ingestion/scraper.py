@@ -124,7 +124,6 @@ def scrape_all(lookback_hours: int | None = None, feeds=None) -> list[NewsItem]:
         all_items.extend(scrape_rss(feed_url, hours))
         time.sleep(0.5)  # polite crawling
 
-    # NewsAPI broad query
     all_items.extend(scrape_newsapi("AI OR artificial intelligence OR crypto OR blockchain", hours))
 
     unique = deduplicate(all_items)

@@ -1,4 +1,3 @@
-# tests/test_alpha_signal.py
 import pytest
 import time
 from alpha.signal import AlphaSignal, AggregatedSignal

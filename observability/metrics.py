@@ -1,14 +1,3 @@
-"""
-Performance Metrics — live tracking of key trading statistics.
-
-Tracks:
-  - Sharpe ratio (rolling)
-  - Win rate
-  - Average EV per trade
-  - Latency distribution (p50, p95, p99)
-  - Drawdown (current + max)
-  - Trade frequency
-"""
 from __future__ import annotations
 
 import statistics
@@ -42,12 +31,9 @@ class PerformanceSnapshot:
 
 
 class MetricsTracker:
-    """
-    Rolling metrics tracker. Call record_trade() after each execution.
-    All windows are in-memory; no persistence (use logger for that).
-    """
+    """Rolling in-memory metrics. Persisted data lives in observability/logger.py."""
 
-    WINDOW = 100   # rolling window size for Sharpe
+    WINDOW = 100  # rolling window for Sharpe calculation
 
     def __init__(self):
         self._pnl_window: Deque[float] = deque(maxlen=self.WINDOW)
@@ -105,7 +91,7 @@ class MetricsTracker:
             std = statistics.stdev(self._pnl_window)
             if std == 0:
                 return 0.0
-            return mean / std * (252 ** 0.5)   # annualized
+            return mean / std * (252 ** 0.5)  # annualized
         except Exception:
             return 0.0
 
@@ -156,7 +142,6 @@ class MetricsTracker:
         console.print(table)
 
 
-# Module-level singleton
 _tracker = MetricsTracker()
 
 

@@ -1,7 +1,3 @@
-# tests/conftest.py
-"""
-Shared pytest fixtures for the test suite.
-"""
 import pytest
 import config
 
@@ -21,7 +17,6 @@ def reset_config_dry_run():
 
     yield
 
-    # Restore
     config.DRY_RUN = original
     try:
         from control.trading_mode import TradingMode

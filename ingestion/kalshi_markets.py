@@ -1,16 +1,5 @@
-"""
-Kalshi Markets — fetches active binary markets from Kalshi's REST API v2
-and maps them to the shared Market dataclass (source='kalshi').
-
-Authentication (pick one):
-  Option A — email + password: set KALSHI_EMAIL + KALSHI_PASSWORD
-             Token cached in memory, refreshed every 55 minutes.
-  Option B — RSA API key: set KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY_PATH
-             Each request is signed with your RSA private key.
-
-Kalshi prices are in cents (1–99); we normalise to [0,1] floats.
-Kalshi volumes are in contracts; we convert to USD (contracts × avg_price).
-"""
+# Auth: set KALSHI_EMAIL+KALSHI_PASSWORD (JWT) or KALSHI_API_KEY_ID+KALSHI_PRIVATE_KEY_PATH (RSA).
+# Prices in cents (1-99) → normalized to [0,1]. Volumes in contracts → converted to USD.
 from __future__ import annotations
 
 import hashlib
@@ -25,7 +14,6 @@ from ingestion.markets import Market, _infer_category, filter_by_categories
 
 log = logging.getLogger(__name__)
 
-# ── Token cache (option A) ─────────────────────────────────────────────────────
 
 @dataclass
 class _TokenCache:
@@ -45,11 +33,9 @@ def _get_auth_headers(method: str = "GET", path: str = "/trade-api/v2/markets") 
     For RSA auth, `method` and `path` must match the actual request being signed
     (Kalshi verifies the signature against the incoming request path).
     """
-    # Option B: RSA key signing
     if config.KALSHI_API_KEY_ID and config.KALSHI_PRIVATE_KEY_PATH:
         return _rsa_headers(method, path)
 
-    # Option A: email/password JWT
     if config.KALSHI_EMAIL and config.KALSHI_PASSWORD:
         token = _ensure_token()
         if token:
@@ -120,7 +106,6 @@ def _rsa_headers(method: str, path: str) -> dict:
         return {}
 
 
-# ── Market fetching ────────────────────────────────────────────────────────────
 
 # Kalshi → our category mapping
 _KALSHI_CATEGORY_MAP: dict[str, str] = {
@@ -142,7 +127,6 @@ def _map_category(kalshi_cat: str, question: str) -> str:
     mapped = _KALSHI_CATEGORY_MAP.get(kalshi_cat, "")
     if mapped:
         return mapped
-    # Fall back to keyword inference
     return _infer_category(question, [kalshi_cat])
 
 
@@ -167,8 +151,7 @@ def fetch_kalshi_markets(limit: int = 200) -> list[Market]:
         return []
 
     headers = _get_auth_headers()
-    # Auth is optional for public market data on Kalshi
-    # (order placement always requires auth)
+    # Auth is optional for market data; always required for order placement.
 
     markets: list[Market] = []
     cursor = ""
@@ -222,29 +205,21 @@ def _parse_kalshi_market(m: dict) -> Market | None:
         title = m.get("title", m.get("subtitle", ticker))
         kalshi_cat = m.get("category", "")
 
-        # Prices — Kalshi returns in cents (0–100)
         yes_bid = m.get("yes_bid", 50)
         yes_ask = m.get("yes_ask", 50)
-        # Mid-price for YES
         yes_price = _cents_to_prob((yes_bid + yes_ask) / 2)
         no_price  = round(1.0 - yes_price, 4)
 
-        # Volume — Kalshi reports in contracts; convert to rough USD
         volume_contracts = float(m.get("volume", 0) or 0)
-        avg_price = yes_price * 0.5 + 0.5 * 0.5   # rough blend
+        avg_price = yes_price * 0.5 + 0.5 * 0.5
         volume_usd = _volume_to_usd(volume_contracts, avg_price)
 
-        # End date
         end_date = m.get("close_time", m.get("expiration_time", ""))
 
-        # Skip fully resolved or zero-volume markets
         if yes_price in (0.0, 1.0) and volume_usd == 0:
             return None
 
         category = _map_category(kalshi_cat, title)
-
-        # Build a stable condition_id from the ticker
-        # (Kalshi tickers like "FED-25-MAY-T" are already unique strings)
         condition_id = f"kalshi:{ticker}"
 
         return Market(
@@ -256,7 +231,7 @@ def _parse_kalshi_market(m: dict) -> Market | None:
             volume=volume_usd,
             end_date=end_date,
             active=True,
-            tokens=[],          # Kalshi has no token model
+            tokens=[],
             source="kalshi",
         )
 
