@@ -18,6 +18,8 @@ from signal import nlp_processor
 from observability import broadcaster
 from alpha.momentum_alpha import MomentumAlpha
 from alpha.news_alpha import NewsAlpha
+from alpha.ensemble import combine
+from portfolio.portfolio_manager import PortfolioManager
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +67,7 @@ class Pipeline:
             qsize = self._news_queue.qsize()
             if qsize > 50:
                 log.warning(f"[pipeline] Queue depth={qsize} — events may lag behind news ingestion")
+            # fire-and-forget so one slow classification doesn't block the next event
             asyncio.create_task(
                 self._handle_event(event),
                 name=f"event-{event.source}-{self._event_count}",
@@ -143,6 +146,7 @@ class Pipeline:
             return
 
         cls_start = time.monotonic()
+        # fetch order book while the LLM is classifying — saves ~200ms per market
         classification, ob = await asyncio.gather(
             classify_async(headline=event.headline, market=market, source=event.source),
             self.watcher.fetch_order_book(market),
@@ -162,6 +166,7 @@ class Pipeline:
         snap = self.watcher.get_snapshot(market.condition_id)
 
         if snap and snap.is_moving:
+            # don't chase — price already ran, slippage will eat the edge
             log.info(f"[pipeline] Market already moving, skipping: {market.question[:50]}")
             return
 
@@ -194,11 +199,9 @@ class Pipeline:
 
         self._signal_count += 1
 
-        from alpha.ensemble import combine
-        from portfolio.portfolio_manager import PortfolioManager
-
         news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
         if news_alpha_sig is None:
+            # edge didn't clear NewsAlpha threshold, but still broadcast so the UI feed stays live
             broadcaster.broadcast({
                 "type":       "signal",
                 "side":       signal.side,
