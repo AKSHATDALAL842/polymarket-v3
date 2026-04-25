@@ -54,5 +54,10 @@ docs/superpowers/
 # Git worktrees
 .worktrees/
 
-#kalshi_pvt_key
+# Kalshi private key
+kalshi_pvt_key.txt
 Kalshi_pvt_key.txt
+
+# Node
+node_modules/
+package-lock.json
