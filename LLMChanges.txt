@@ -1,0 +1,495 @@
+HFT-GRADE REDESIGN: PREDICTION MARKET TRADING SYSTEM
+=====================================================
+Author: Senior Quantitative Engineer
+Date: 2026-04-27
+
+
+1. ARCHITECTURE DIAGRAM
+=======================
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                         LAYER 1 — HOT PATH  (<100ms)                        ║
+║                                                                              ║
+║  ┌─────────────┐    ┌──────────────┐    ┌───────────────┐    ┌───────────┐  ║
+║  │ NEWS FIREHOSE│───▶│  NORMALIZER  │───▶│ FAST CLASSIFIER│───▶│  PRICER   │  ║
+║  │ (WebSocket/ │    │ (Rust proc.) │    │ LightGBM <5ms  │    │ Pre-baked │  ║
+║  │  HTTP/2     │    │ dedup+strip  │    │ TRADE / SKIP   │    │ Kelly tbl │  ║
+║  │  SSE feed)  │    │              │    │ + conf score   │    │           │  ║
+║  └─────────────┘    └──────────────┘    └───────────────┘    └─────┬─────┘  ║
+║        T+0ms              T+3ms               T+8ms                │        ║
+║                                                                     ▼        ║
+║  ┌──────────────────────────────────────────────────────────┐ ┌──────────┐  ║
+║  │               IN-MEMORY MARKET STATE                     │ │  RISK    │  ║
+║  │  { market_id → (yes_price, spread, sensitivity_score,   │ │  ENGINE  │  ║
+║  │    last_signal_ts, open_position_usd, daily_pnl) }       │ │ (atomic  │  ║
+║  │  Updated by WS price feed independently of hot path      │ │  checks) │  ║
+║  └──────────────────────────────────────────────────────────┘ └────┬─────┘  ║
+║                                                                     │        ║
+║                                                               T+15ms│        ║
+║                                                                     ▼        ║
+║                                                              ┌────────────┐  ║
+║                                                              │ORDER ROUTER│  ║
+║                                                              │Poly / Kalshi│  ║
+║                                                              │HTTP/2 keep- │  ║
+║                                                              │alive conn  │  ║
+║                                                              └─────┬──────┘  ║
+║                                                               T+<100ms       ║
+╠══════════════════════════════════════════════════════════════╪═══════════════╣
+║           ASYNC BRIDGE (lock-free shared memory)             │               ║
+╠══════════════════════════════════════════════════════════════╪═══════════════╣
+║                         LAYER 2 — COLD PATH (500ms–5s)       │               ║
+║                                                              │               ║
+║  ┌────────────┐   ┌─────────────┐   ┌──────────────────┐   │               ║
+║  │  LLM       │   │  THRESHOLD  │   │   POST-TRADE      │   │               ║
+║  │  ENRICHER  │──▶│  CALIBRATOR │──▶│   ANALYST         │   │               ║
+║  │            │   │  (updates   │   │  (outcome audit,  │   │               ║
+║  │ Groq async │   │  classifier │   │   edge decay,     │   │               ║
+║  │ queue      │   │  weights)   │   │   prompt tuning)  │   │               ║
+║  └────────────┘   └─────────────┘   └──────────────────┘   │               ║
+║       ▲                  │                                    │               ║
+║       │                  ▼                                    │               ║
+║  [every headline    [every N hours:                           │               ║
+║   that FIRED or      write new thresholds                     │               ║
+║   was borderline]    to shared config]                        │               ║
+╚══════════════════════════════════════════════════════════════╧═══════════════╝
+
+MARKET DATA PLANE (runs independently of both layers):
+  Polymarket WS ──▶ price feed consumer ──▶ in-memory state (lock-free write)
+  Kalshi REST poll (500ms) ──▶ same state
+
+
+2. HOT PATH SPECIFICATION
+=========================
+
+SIGNALS THAT FIRE HERE:
+
+  1. Keyword-match signals
+     A curated watchlist of ~500 high-impact phrases ("Fed raises rates",
+     "SpaceX launch success", "SEC approves") mapped to specific market IDs
+     with pre-assigned direction and sensitivity. Zero inference, pure lookup.
+     Fires in <2ms.
+
+  2. Fast classifier signals
+     LightGBM model scores every headline that doesn't hit the watchlist.
+     Outputs TRADE/SKIP + confidence. Fires in <5ms.
+
+  3. Momentum signals
+     Price tick crosses threshold on a tracked market. No text processing.
+
+ORDER SIZING WITHOUT LLM:
+
+  Pre-baked Kelly lookup table, computed offline. At startup:
+    for each (ev_bucket, confidence_bucket, spread_bucket):
+        size = kelly(ev, confidence, bankroll) * spread_penalty
+
+  At runtime: two hash lookups + one multiply. No floating point math
+  in the hot path. LLM's materiality/novelty scores are replaced by
+  the classifier's confidence output bucketed into 5 tiers.
+
+ORDER ENTRY:
+
+  - Persistent HTTP/2 connections to both APIs established at startup.
+  - Kalshi RSA auth headers pre-computed and cached. Only timestamp
+    component refreshed at order time.
+  - Polymarket CLOB orders serialized to bytes at classification time.
+  - No JSON serialization in the hot path — use orjson (Rust-backed,
+    5-10x faster than stdlib json).
+
+RISK ENFORCEMENT (no I/O, integer comparisons only):
+
+  assert daily_loss_cents < MAX_DAILY_LOSS_CENTS
+  assert open_usd[category] < CATEGORY_LIMIT_CENTS
+  assert time.monotonic() - last_signal_ts[market_id] > COOLDOWN_NS
+
+  No database reads. No locks. Risk state updated by single writer thread
+  after fills confirm, read by hot path thread (GIL is sufficient sync).
+
+
+3. COLD PATH SPECIFICATION
+==========================
+
+WHERE THE LLM RUNS:
+
+  Every headline the fast classifier touches — whether it fires or skips —
+  is pushed onto an async queue. The LLM worker drains this queue with no
+  time pressure. Its output is never waited on.
+
+HOW LLM OUTPUT FEEDS BACK INTO LAYER 1:
+
+  LLM output → label_store.append({headline, features, llm_direction, llm_confidence})
+             → thresholds.json updated every 4 hours by calibration job
+  Hot path   → reads thresholds.json at startup / explicit reload only
+
+  Threshold updates take effect on next process restart or explicit SIGHUP.
+  Never mid-trade. Intentional.
+
+NIGHTLY RECALIBRATION (02:00 UTC):
+
+  1. Pull last 7 days of LLM classifications from label store
+  2. Compare LLM labels vs fast classifier predictions — find disagreements
+  3. Disagreements with LLM confidence > 0.85 become new training examples
+  4. Retrain LightGBM on augmented dataset
+  5. If new model beats old on held-out validation, hot-swap the model file
+  6. LLM receives the day's fill data and P&L, writes markdown summary
+     flagging which signal categories are decaying
+
+POST-TRADE ANALYSIS:
+
+  Every executed trade gets a post-mortem after market resolution:
+  - Did the market move in the predicted direction?
+  - How fast did it reprice?
+  - Was the headline novel or already known?
+  - LLM output feeds the calibration table in SQLite.
+
+
+4. FAST CLASSIFIER DESIGN
+=========================
+
+MODEL CHOICE: LightGBM
+
+  Comparison:
+  ┌──────────────────────┬───────────────┬──────────┬──────────────────┬──────────┐
+  │ Option               │ Inference time│ Accuracy │ Retraining ease  │ GIL risk │
+  ├──────────────────────┼───────────────┼──────────┼──────────────────┼──────────┤
+  │ Logistic regression  │ <1ms          │ Low      │ Easy             │ None     │
+  │ LightGBM             │ <5ms          │ High     │ Easy             │ None     │
+  │ DistilBERT (CPU)     │ 50–150ms      │ High     │ Slow             │ High     │
+  │ DistilBERT (GPU)     │ 10–30ms       │ High     │ Slow             │ Medium   │
+  └──────────────────────┴───────────────┴──────────┴──────────────────┴──────────┘
+
+  DistilBERT on CPU blows the latency budget. DistilBERT on GPU requires
+  a GPU instance ($0.30–$1.50/hr), adds complexity, still hits 10–30ms.
+  LightGBM runs in <1ms on a single CPU core, no GPU, no batching
+  requirement, calibrated probability output. Right call for a 2-person
+  team on seed budget.
+
+FEATURE SET (40 features):
+
+  TEXT FEATURES (pre-compiled regex, <3ms):
+    f01  headline_length_tokens          short headlines = breaking news
+    f02  has_number                      "rises 3%" vs "rises"
+    f03  has_percentage                  stronger signal
+    f04  has_dollar_amount
+    f05  verb_tense_past                 "approved" vs "may approve"
+    f06  verb_tense_present_perfect      "has passed" = definitive
+    f07  negation_present                "did not" flips direction
+    f08  uncertainty_word_count          "might", "could", "expected"
+    f09  certainty_word_count            "confirms", "announces", "signs"
+    f10  question_mark_present           almost always SKIP
+    f11  attribution_present             "sources say" = weaker signal
+    f12  headline_is_duplicate_7d        seen before = skip
+
+  NAMED ENTITY FEATURES (spaCy en_core_web_sm, <2ms):
+    f13  has_person_entity
+    f14  has_org_entity
+    f15  has_gpe_entity                  country/city
+    f16  has_money_entity
+    f17  has_percent_entity
+    f18  entity_count
+    f19  entity_matches_watched_person   Trump, Powell, etc.
+    f20  entity_matches_watched_org      Fed, SEC, SpaceX, etc.
+
+  SOURCE FEATURES (lookup, <0.1ms):
+    f21  source_credibility_score        0–1, pre-assigned per source
+    f22  source_is_primary               Reuters/AP/Bloomberg = 1
+    f23  source_is_social                Reddit/Twitter = 0
+    f24  source_historical_precision     how often source headlines moved markets
+
+  MARKET CONTEXT FEATURES (in-memory lookup, <0.1ms):
+    f25  market_yes_price                current midpoint
+    f26  market_spread                   bid-ask spread
+    f27  market_volume_24h               liquidity proxy
+    f28  market_days_to_expiry
+    f29  market_sensitivity_score        pre-computed: how much does this market move on news?
+    f30  market_last_move_minutes        time since last significant price change
+    f31  category_volatility_baseline    rolling std of price changes in this category
+
+  TEMPORAL FEATURES:
+    f32  hour_of_day                     market activity is cyclical
+    f33  day_of_week
+    f34  minutes_since_market_open_us    9:30 AM ET spikes
+    f35  is_fomc_week                    pre-computed calendar flag
+    f36  is_earnings_season
+
+  NOVELTY PROXY (no LLM needed):
+    f37  cosine_sim_to_last_headline     TF-IDF sim to previous 10 headlines
+    f38  time_since_similar_headline_h   how long since a near-duplicate fired
+    f39  market_price_moved_since_last_headline  market already moved = stale
+    f40  news_velocity_5m                how many headlines in last 5 minutes
+
+OUTPUT:
+  {
+    "action":       "TRADE" | "SKIP",
+    "confidence":   float,       # calibrated probability, 0–1
+    "direction":    "YES" | "NO",
+    "size_bucket":  1 | 2 | 3 | 4 | 5   # maps to pre-computed Kelly table
+  }
+
+TRAINING DATA:
+
+  Phase 1 (bootstrap):
+    Export every paper trade from SQLite. LLM classification stored in each
+    row becomes the label. Augment with:
+    - Historical Polymarket data from Gamma API (resolved markets + timestamps)
+    - Synthetic negatives: headlines from resolved markets that did NOT move price
+
+  Phase 2 (ongoing):
+    Every headline that fires in the hot path and every borderline headline
+    (classifier confidence 0.4–0.6) gets LLM-labeled asynchronously.
+    These flow into the label store. Retrain weekly until 10k+ examples,
+    then monthly.
+
+RETRAINING CADENCE:
+
+  Weekly automated retrain during off-hours. Model only swaps if:
+  - Validation AUC improves by >0.005
+  - Precision on TRADE class stays above 0.60
+  - Backtested P&L on last 30 days improves or holds
+
+  LLM labels only the hard cases (40–60% confidence zone). Not everything.
+  Those are the examples that shift the decision boundary.
+
+
+5. INFRASTRUCTURE RECOMMENDATIONS
+===================================
+
+HOSTING:
+  ┌──────────────────────────┬───────────────────┬──────────────────┬─────────┬─────────────────┐
+  │ Option                   │ Latency to Kalshi │ Latency to Poly  │ Cost/mo │ Verdict         │
+  ├──────────────────────────┼───────────────────┼──────────────────┼─────────┼─────────────────┤
+  │ AWS us-east-1 (N.Virginia)│ ~5ms             │ ~20ms            │ $150-300│ Best overall    │
+  │ Vultr NYC bare metal     │ ~2ms              │ ~25ms            │ $120    │ Best for Kalshi │
+  │ Hetzner EU               │ ~80ms             │ ~90ms            │ $60     │ Too far         │
+  │ Local machine            │ unpredictable     │ unpredictable    │ $0      │ Dev only        │
+  └──────────────────────────┴───────────────────┴──────────────────┴─────────┴─────────────────┘
+
+  Recommendation: AWS us-east-1 c7g.medium (Graviton3, ARM, single-core
+  optimized) or Vultr bare-metal NYC. Not a GPU instance — fast classifier
+  runs on CPU. Total cost: $100–200/month at seed stage.
+
+NETWORK STACK:
+  - TCP_NODELAY on all sockets (disable Nagle's algorithm)
+  - TCP keepalive to detect dead connections without timeout wait
+  - HTTP/2 for both Polymarket and Kalshi (persistent connections)
+  - WebSocket for price feed, not polling (saves 10–30ms per update)
+  - Do NOT attempt kernel bypass (DPDK, RDMA) — bottleneck is internet
+    RTT, not NIC-to-kernel path. Buys nothing here.
+
+NEWS INGESTION LATENCY RANKING:
+  1.  Kalshi/Polymarket price feed WS      ~1ms    (direct, already in codebase)
+  2.  Twitter Filtered Stream API          ~10ms   (requires Basic $100/mo tier)
+  3.  NewsAPI webhook                      ~50ms
+  4.  RSS polling at 1s interval           ~500ms  (replace feedparser default 5s)
+  5.  RSS polling at 5s interval           ~2500ms average (current default)
+  6.  GDELT                                ~300s   (15-min batch — remove from hot path)
+  7.  Reddit                               ~45s    (remove from hot path)
+
+  Action: Drop GDELT and Reddit from hot path. Keep as cold-path enrichment only.
+  Add Twitter Filtered Stream as primary text feed.
+
+PYTHON GIL — WHAT MUST BE REWRITTEN:
+  ┌──────────────────────┬─────────────────┬────────────────────────────┬────────────────────────┐
+  │ Component            │ Current         │ Problem                    │ Fix                    │
+  ├──────────────────────┼─────────────────┼────────────────────────────┼────────────────────────┤
+  │ News normalizer+dedup│ Python          │ GIL blocks concurrent text │ Rust (PyO3) or Go sub  │
+  │ Feature extraction   │ Python + regex  │ Acceptable, single-thread  │ Keep, pre-compile regex│
+  │ LightGBM inference   │ C++ under hood  │ No GIL issue               │ Keep as-is             │
+  │ Order serialization  │ orjson          │ Rust-backed, acceptable    │ Keep                   │
+  │ HTTP/2 client        │ httpx           │ Pure Python, 5–10ms        │ Replace with aiohttp   │
+  │ WebSocket price feed │ websockets      │ Acceptable                 │ Keep                   │
+  └──────────────────────┴─────────────────┴────────────────────────────┴────────────────────────┘
+
+  Honest assessment: you do not need to rewrite in Rust/Go to hit 100ms
+  for prediction markets. The bottleneck is network RTT (40–80ms), not
+  Python overhead (~15ms total). Full Rust rewrite buys ~10ms and costs
+  months. Do it only after you've proven the classifier edge is real.
+
+MONITORING:
+  - Latency histogram (Prometheus + Grafana): p50/p95/p99 hot-path cycle
+    time per stage. Alert at p95 > 80ms.
+  - Fill rate tracker: if orders-placed vs orders-filled drops below 70%,
+    market has moved and classifier edge is stale.
+  - Classifier drift detector: compare last-7-days TRADE class precision
+    against baseline. Drop >5% triggers LLM relabeling sprint.
+  - Dead-man switch: no orders attempted in 2 hours during market hours
+    → page immediately. Something is silently broken.
+
+
+6. REVISED EXECUTION FLOW WITH LATENCY BUDGET
+==============================================
+
+  T+0ms      Headline arrives on WebSocket/HTTP feed
+             RISK: feed goes down → polling fallback activates in 100ms
+
+  T+1ms      Raw text extracted, UTF-8 decoded
+             Language detection (langdetect, pre-warmed): EN only passes
+
+  T+3ms      Normalizer: lowercase, strip URLs/HTML, dedup hash check
+             If hash seen in last 60s → DROP (duplicate), else continue
+             ⚠ RISK: regex on very long text can spike to 8ms
+               MITIGATION: hard cap input at 500 chars, truncate
+
+  T+5ms      Watchlist lookup (hash map, O(1))
+             If hit → direction + market_id assigned, skip classifier
+             If miss → continue to classifier
+
+  T+8ms      Feature extraction (40 features)
+             spaCy NER: pre-loaded model, parser/tagger disabled → ~3ms
+             Keyword flags: pre-compiled regex → ~1ms
+             Market context: in-memory dict lookup → <0.1ms
+             ⚠ RISK: spaCy cold start on first call is 50ms
+               MITIGATION: warm-up call at process start
+
+  T+10ms     LightGBM inference
+             Single predict_proba call → <1ms
+             If confidence < 0.55 → SKIP (no order)
+
+  T+12ms     Market matching
+             Pre-computed embedding index narrows to top-5 candidates
+             Re-rank by sensitivity_score × confidence → select target market
+             ⚠ RISK: no matching market found
+               MITIGATION: SKIP cleanly, log for LLM cold-path review
+
+  T+14ms     Sizing
+             Two hash lookups into pre-baked Kelly table
+             Returns size_usd (integer cents)
+
+  T+15ms     Risk gate (in-memory, no I/O)
+             Check: daily_loss < limit
+             Check: open_position[market] < category_cap
+             Check: cooldown elapsed
+             If any fail → DROP, log rejection reason
+
+  T+18ms     Order construction
+             orjson serialization to bytes
+             Kalshi: RSA timestamp refresh if >500ms since last signing
+             ⚠ RISK: RSA signing is 2–5ms in Python cryptography lib
+               MITIGATION: cache signed headers, re-sign every 250ms only
+
+  T+20ms     Order submitted to API (persistent HTTP/2 connection)
+             [+ network round-trip to API endpoint]
+
+  T+60ms     API acknowledges order (assuming 40ms RTT from us-east-1)
+             ⚠ RISK: RTT spikes to 100ms+ under API load
+               MITIGATION: measure p99 RTT continuously;
+               if p99 > 80ms, reduce order rate
+
+  T+62ms     Order ID received, position state updated in memory
+             Async: push headline + order to cold-path queue (non-blocking)
+
+  TOTAL HOT PATH: ~62ms  (budget: 100ms, 38ms headroom)
+
+
+7. LLM'S NEW ROLE
+=================
+
+  Title:    Overnight Strategy Analyst
+  Works:    Async, off market hours preferred. Never blocks execution.
+
+  TRIGGER CONDITIONS (not real-time):
+    1. Any headline the fast classifier scored 0.40–0.65 confidence
+    2. Any trade that resulted in a loss > threshold (post-mortem)
+    3. Any resolved market where the classifier's direction was wrong
+    4. Nightly batch: the day's full trade log
+
+  INPUTS PER TASK:
+    {
+      "headline": "...",
+      "classifier_score": 0.52,
+      "classifier_direction": "YES",
+      "market_question": "Will Fed raise rates in May 2026?",
+      "market_yes_price_at_signal": 0.34,
+      "market_yes_price_at_fill": 0.36,
+      "market_yes_price_at_close": 0.71,
+      "fill_executed": true,
+      "pnl": 12.40
+    }
+
+  OUTPUTS PER TASK:
+    1. Label (YES / NO / IRRELEVANT) + confidence → training label store
+    2. Reasoning (1 sentence) → stored for audit
+    3. Feature flag (optional): e.g. "this headline contained an attribution
+       hedge ('sources say') that the classifier should penalize more heavily"
+
+  WEEKLY BATCH OUTPUT (JSON config diff):
+    {
+      "threshold_adjustments": {
+        "source_reuters_credibility": 0.92,
+        "category_crypto_base_sensitivity": 0.71
+      },
+      "watchlist_additions": ["FOMC minutes released", "tariff signed"],
+      "watchlist_removals": ["..."],
+      "feature_notes": ["f37 cosine sim threshold too loose for RSS sources"]
+    }
+
+  Review cycle: LLM proposes → human approves → system applies.
+  LLM does NOT have write access to production config during market hours.
+
+  WHAT THE LLM EXPLICITLY DOES NOT DO:
+    - Does not approve or block individual trades
+    - Does not see the order book in real time
+    - Does not set position sizes
+    - Does not auto-deploy configuration changes
+
+
+8. FATAL FLAW CHECK
+===================
+
+FLAW 1: CLASSIFIER STALENESS (primary new competitive risk)
+
+  You've removed the LLM from the path but the risk shifts to the fast
+  classifier. It was trained on historical data. Prediction markets are
+  non-stationary — the topics that generate edge change every few weeks
+  (election cycles, Fed cycles, crypto cycles). A classifier trained in
+  November 2025 will degrade by March 2026 on topics it has never seen.
+  The LLM-in-the-loop system had the LLM's broad world knowledge as a
+  backstop. LightGBM has no such generalization.
+
+  Mitigation: The weekly retraining loop is not optional — it is the core
+  maintenance task. If the team misses two consecutive retraining cycles,
+  assume the classifier is degraded. Instrument precision decay as a
+  first-class alert.
+
+FLAW 2: API RATE LIMITS TARGETING HFT BEHAVIOR
+
+  Both Polymarket and Kalshi have informal rate limits today. Neither has
+  published hard HFT-specific restrictions, but both are lightly staffed
+  exchanges that could implement them overnight with a config change.
+  Kalshi is a regulated DCM under CFTC oversight — they have regulatory
+  motivation to prevent "disruptive trading" even if not currently enforced.
+
+  Mitigation: Keep maximum sustained rate at 2–3 orders/minute, well below
+  the threshold that would trigger automated flagging. Implement a hard
+  per-minute order cap in the hot path itself, not just as a config option.
+  The TradingMode kill switch is critical.
+
+FLAW 3: HARD LATENCY FLOOR IMPOSED BY API ARCHITECTURE
+
+  There is a hard floor of ~40–80ms network RTT regardless of everything
+  else you do. Polymarket's CLOB API sits behind Cloudflare. Kalshi's API
+  is a standard HTTPS REST endpoint. Neither offers co-location, FIX
+  protocol, or dedicated low-latency feeds.
+
+  Practical implication: your real competition is not sub-millisecond HFT.
+  It is other bots operating on the same 40–100ms floor. Your edge is
+  classifier quality and signal source breadth, not raw latency. Anyone
+  claiming prediction market HFT requires microsecond infrastructure is
+  solving the wrong problem.
+
+FLAW 4: MARKET ALREADY MOVED BEFORE ORDER ARRIVES
+
+  This will happen regularly. A competing bot saw the same headline 200ms
+  earlier and pushed the market from 0.35 to 0.60. Your classifier fires
+  correctly — YES direction — but by order arrival, fair value is 0.61,
+  your limit at 0.38 doesn't fill, and chasing with a market order means
+  paying 0.62 into a 4-cent-wide spread.
+
+  Mitigation: Before order submission at T+15ms, re-read the current
+  mid-price from the in-memory market state dict (updated independently
+  by the WebSocket price feed). Compare against the price used as classifier
+  input. If the market has moved >50% of the predicted move since the
+  headline arrived, abort. This check costs <0.1ms. You will pass on many
+  correct calls, but the ones you take will be cleaner entries.
+
+
+END OF DOCUMENT
