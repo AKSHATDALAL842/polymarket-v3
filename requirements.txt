@@ -15,11 +15,27 @@ tweepy>=4.14.0
 sentence-transformers>=2.7.0
 numpy>=1.26.0
 
+# Fast classifier (hot path)
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+orjson>=3.9.0
+
 # Terminal UI
 rich>=13.0.0
 
-# Optional: OpenAI embeddings backend (set EMBEDDING_BACKEND=openai in .env)
-# openai>=1.30.0
+# API server (api.py WebSocket endpoint)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# OpenAI client — required for Groq API (USE_GROQ=true default)
+openai>=1.30.0
+
+# HTTP cert bundle — used by market_watcher.py WebSocket client
+certifi>=2024.0.0
+
+# Optional: NLP gate (degrades gracefully if absent)
+# spacy>=3.7.0
+# vaderSentiment>=3.3.2
 
 # Optional: live Polymarket CLOB execution
 # py-clob-client>=0.18.0   # requires Python >=3.9.10

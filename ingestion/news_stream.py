@@ -27,7 +27,10 @@ class NewsEvent:
     latency_ms: int = 0
 
     def age_seconds(self) -> float:
-        return (datetime.now(timezone.utc) - self.received_at).total_seconds()
+        # Use published_at (source timestamp) so a 3h-old RSS article is not
+        # treated as age=0 just because we ingested it moments ago.
+        ref = self.published_at if self.published_at else self.received_at
+        return (datetime.now(timezone.utc) - ref).total_seconds()
 
 
 class TwitterStream:
@@ -100,11 +103,14 @@ class TwitterStream:
                         timeout=None,
                     ) as resp:
                         if resp.status_code == 429:
+                            wait = min(300, backoff * 60)
                             log.warning(
-                                "[twitter] 429 Too Many Requests — filtered stream requires "
-                                "Twitter API Basic tier ($100/mo). Falling back to RSS only."
+                                f"[twitter] 429 Rate limited — backing off {wait}s "
+                                f"(filtered stream may require Basic tier)"
                             )
-                            return
+                            await asyncio.sleep(wait)
+                            backoff = min(backoff * 2, 5)
+                            continue
                         if resp.status_code == 403:
                             log.warning(
                                 "[twitter] 403 Forbidden — account does not have stream access. "
@@ -161,6 +167,7 @@ class TelegramMonitor:
             log.info("[telegram] No bot token or channels — monitor disabled")
             return
 
+        # Build URL once; never pass it to log.* — it embeds the bot token.
         base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
         while True:
@@ -199,7 +206,8 @@ class TelegramMonitor:
                     await queue.put(event)
 
             except Exception as e:
-                log.warning(f"[telegram] Error: {e}")
+                # Log only the exception type+message — never the URL (contains token).
+                log.warning(f"[telegram] Polling error: {type(e).__name__}: {e}")
                 await asyncio.sleep(5)
 
 
@@ -597,7 +605,7 @@ class RSSFallback:
     async def stream(self, queue: asyncio.Queue):
         while True:
             try:
-                items = await asyncio.get_event_loop().run_in_executor(
+                items = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: scrape_all(feeds=self._feeds)
                 )
                 now = datetime.now(timezone.utc)

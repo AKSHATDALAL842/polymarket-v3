@@ -30,6 +30,7 @@ class RiskManager:
         self._daily_pnl_cache: float = 0.0
         self._daily_pnl_last_check: float = 0.0
         self._state_lock = Lock()
+        self._restore_from_db()
 
     _DAILY_PNL_CACHE_TTL = 30.0  # re-query logger at most every 30s
 
@@ -37,7 +38,7 @@ class RiskManager:
         now = time.monotonic()
         if now - self._daily_pnl_last_check > self._DAILY_PNL_CACHE_TTL:
             try:
-                import logger as lg
+                from observability import logger as lg
                 self._daily_pnl_cache = lg.get_daily_pnl()
                 self._daily_pnl_last_check = now
             except Exception:
@@ -65,6 +66,43 @@ class RiskManager:
             return False
         return True
 
+    def try_open_position(self, condition_id: str, category: str, amount_usd: float) -> str | None:
+        """Atomically check position/category limits and reserve the slot.
+
+        Returns None if the position was successfully reserved, or a rejection
+        reason string if any limit is exceeded. Callers must NOT call
+        on_trade_opened() after a successful try_open_position() — the slot is
+        already reserved.
+        """
+        with self._state_lock:
+            n = len(self._open_positions)
+            if n >= config.MAX_CONCURRENT_POSITIONS:
+                log.debug(f"[risk] Max concurrent positions ({n}/{config.MAX_CONCURRENT_POSITIONS})")
+                return "rejected_max_positions"
+            current_cat = self._category_exposure.get(category, 0.0)
+            if current_cat + amount_usd > config.MAX_EXPOSURE_PER_CATEGORY_USD:
+                log.debug(
+                    f"[risk] Category cap: {category} "
+                    f"${current_cat:.2f} + ${amount_usd:.2f} > ${config.MAX_EXPOSURE_PER_CATEGORY_USD}"
+                )
+                return f"rejected_category_exposure_{category}"
+            self._open_positions[condition_id] = amount_usd
+            self._category_exposure[category] = current_cat + amount_usd
+        log.debug(
+            f"[risk] Position reserved: {condition_id[:12]} ${amount_usd:.2f} "
+            f"category={category} open={len(self._open_positions)}"
+        )
+        return None
+
+    def release_position_slot(self, condition_id: str, category: str) -> None:
+        """Release a reserved slot on execution failure without recording P&L."""
+        with self._state_lock:
+            amount = self._open_positions.pop(condition_id, 0.0)
+            self._category_exposure[category] = max(
+                0.0, self._category_exposure.get(category, 0.0) - amount
+            )
+        log.debug(f"[risk] Position slot released (failed exec): {condition_id[:12]}")
+
     def in_cooldown(self) -> bool:
         if time.monotonic() < self._cooldown_until:
             remaining = int(self._cooldown_until - time.monotonic())
@@ -73,6 +111,7 @@ class RiskManager:
         return False
 
     def on_trade_opened(self, condition_id: str, category: str, amount_usd: float):
+        """Legacy: only call this when NOT using try_open_position()."""
         with self._state_lock:
             self._open_positions[condition_id] = amount_usd
             self._category_exposure[category] = self._category_exposure.get(category, 0.0) + amount_usd
@@ -101,15 +140,16 @@ class RiskManager:
                 self._consecutive_losses = 0
 
     def status(self) -> dict:
+        cooldown = self.in_cooldown()
         return {
             "open_positions": len(self._open_positions),
             "consecutive_losses": self._consecutive_losses,
-            "in_cooldown": self.in_cooldown(),
+            "in_cooldown": cooldown,
             "category_exposure": dict(self._category_exposure),
             "can_trade": (
                 self.can_trade_daily()
                 and self.can_open_position()
-                and not self.in_cooldown()
+                and not cooldown
             ),
         }
 
@@ -117,3 +157,24 @@ class RiskManager:
         self._consecutive_losses = 0
         self._cooldown_until = 0.0
         log.info("[risk] Daily state reset")
+
+    def _restore_from_db(self):
+        """Re-populate open position slots from the positions table on startup."""
+        try:
+            from observability.logger import get_open_positions
+            rows = get_open_positions()
+            for row in rows:
+                market_id = row.get("market_id", "")
+                category = row.get("category", "unknown")
+                size_usd = float(row.get("size_usd", 0.0))
+                if market_id and size_usd > 0:
+                    self._open_positions[market_id] = size_usd
+                    self._category_exposure[category] = (
+                        self._category_exposure.get(category, 0.0) + size_usd
+                    )
+            if self._open_positions:
+                log.info(
+                    f"[risk] Restored {len(self._open_positions)} open position(s) from DB"
+                )
+        except Exception as e:
+            log.warning(f"[risk] Could not restore positions from DB: {e}")

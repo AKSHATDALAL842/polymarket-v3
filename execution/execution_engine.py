@@ -20,6 +20,12 @@ class ExecutionEngine:
                 cls._singleton = cls()
         return cls._singleton
 
+    def __init__(self):
+        self._watcher = None  # set via set_watcher() from Pipeline after startup
+
+    def set_watcher(self, watcher) -> None:
+        self._watcher = watcher
+
     def execute(self, order: dict):
         """
         Execute an order from PortfolioManager.
@@ -80,7 +86,11 @@ class ExecutionEngine:
         )
 
     def _get_microstructure(self, market_id: str) -> tuple[float, float]:
-        return 0.04, 0.0
+        if self._watcher is not None:
+            snap = self._watcher.get_snapshot(market_id)
+            if snap is not None:
+                return snap.spread, 0.0  # live spread; momentum tracking is future work
+        return 0.04, 0.0  # fallback when watcher not yet connected
 
     def _rejected_result(self, reason: str):
         from execution.executor import ExecutionResult

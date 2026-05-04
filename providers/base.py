@@ -18,11 +18,15 @@ class MarketProvider(ABC):
         """Fetch active markets from this platform."""
         ...
 
-    def get_price(self, market_id: str) -> float | None:
-        """Look up live YES price from MarketWatcher snapshots. No extra API call."""
+    def get_price(self, market_id: str, watcher=None) -> float | None:
+        """Look up live YES price from a shared MarketWatcher instance.
+
+        watcher must be injected by the caller — a fresh MarketWatcher() has
+        no snapshots and will always return None.
+        """
         try:
-            from ingestion.market_watcher import MarketWatcher
-            watcher = MarketWatcher()
+            if watcher is None:
+                return None
             snap = watcher.get_snapshot(market_id)
             return snap.yes_price if snap else None
         except Exception:

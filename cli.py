@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import logging
+import logging.handlers
 import os
 import sys
 
@@ -33,6 +34,17 @@ logging.basicConfig(
     format="%(asctime)s  %(message)s",
     datefmt="%H:%M:%S",
 )
+
+_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_log_dir, exist_ok=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    os.path.join(_log_dir, "pipeline.log"),
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s  %(message)s"))
+logging.getLogger().addHandler(_file_handler)
+
 for _noisy in ["httpx", "httpcore", "openai._base_client", "urllib3",
                "sentence_transformers", "transformers", "huggingface_hub"]:
     logging.getLogger(_noisy).setLevel(logging.WARNING)
@@ -50,6 +62,12 @@ def cmd_watch(args):
     from pipeline import run_pipeline_v2
 
     if args.live:
+        from control.safety_guard import SafetyGuard
+        result = SafetyGuard().check()
+        if not result.safe:
+            console.print(f"[red bold]LIVE TRADING BLOCKED:[/red bold] {result.reason}\n")
+            console.print("[yellow]Fix the issue above or run in dry-run mode.[/yellow]")
+            sys.exit(1)
         config.DRY_RUN = False
         console.print("[red bold]LIVE TRADING ENABLED[/red bold]\n")
     else:
@@ -183,7 +201,9 @@ def cmd_verify(args):
 
     import config
     has_key = bool(config.ANTHROPIC_API_KEY) and config.ANTHROPIC_API_KEY != "sk-ant-..."
-    if has_key:
+    if config.USE_GROQ:
+        console.print(f"  [dim]SKIP[/dim]  Anthropic API key (Groq is active backend)")
+    elif has_key:
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -206,6 +226,23 @@ def cmd_verify(args):
         console.print(f"  [bright_green]PASS[/bright_green]  RSS scraper ({len(items)} headlines)")
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  RSS scraper — {e}")
+
+    has_groq = bool(config.GROQ_API_KEY)
+    if has_groq:
+        try:
+            from openai import OpenAI as _OAI
+            _groq = _OAI(api_key=config.GROQ_API_KEY, base_url=config.GROQ_BASE_URL)
+            _groq.chat.completions.create(
+                model=config.CLASSIFICATION_MODEL,
+                max_tokens=5,
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            console.print(f"  [bright_green]PASS[/bright_green]  Groq API key (verified)")
+        except Exception as e:
+            console.print(f"  [red]FAIL[/red]  Groq API key — {type(e).__name__}: {e}")
+            all_good = False
+    else:
+        console.print(f"  [dim]SKIP[/dim]  Groq API (optional — set GROQ_API_KEY to use)")
 
     has_twitter = bool(config.TWITTER_BEARER_TOKEN)
     if has_twitter:

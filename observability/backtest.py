@@ -210,7 +210,7 @@ def _compute_sharpe(pnls: list[float]) -> float:
     import statistics
     mean = statistics.mean(pnls)
     std = statistics.stdev(pnls)
-    return (mean / std * (252 ** 0.5)) if std > 0 else 0.0
+    return (mean / std) if std > 0 else 0.0  # per-trade Sharpe (not annualized)
 
 
 def _compute_max_drawdown(pnls: list[float]) -> float:
@@ -230,9 +230,9 @@ def _compute_brier(trades: list[BacktestTrade]) -> float:
         return 0.0
     total = 0.0
     for t in trades:
-        predicted = t.confidence if t.side == "YES" else (1 - t.confidence)
-        actual = 1.0 if t.correct else 0.0
-        total += (predicted - actual) ** 2
+        predicted_yes = t.confidence if t.side == "YES" else (1.0 - t.confidence)
+        actual_yes = 1.0 if (t.side == "YES" and t.correct) or (t.side == "NO" and not t.correct) else 0.0
+        total += (predicted_yes - actual_yes) ** 2
     return total / len(trades)
 
 
@@ -281,10 +281,7 @@ async def run_backtest_async(
             tokens=[],
         )
 
-        if resolved_yes:
-            headline = f"Reports indicate YES outcome likely: {question[:80]}"
-        else:
-            headline = f"Sources suggest NO outcome expected: {question[:80]}"
+        headline = f"Breaking: major development expected regarding {question[:80]}"
 
         console.print(f"  [{i+1}/{len(resolved)}] {question[:55]}...", end="\r")
 

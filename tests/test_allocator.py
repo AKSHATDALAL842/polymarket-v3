@@ -68,12 +68,12 @@ def test_allocator_exact_arithmetic():
     assert size == 11.25
 
 
-def test_allocator_floor_at_extreme_drawdown():
-    """At drawdown=0.5 scalar=0 but $1 floor is enforced."""
+def test_allocator_zero_at_extreme_drawdown():
+    """At drawdown>=0.5 the scalar hits 0 and trading halts (size=0)."""
     a = Allocator(capital=1_000_000, max_bet=25.0, sizing_k=0.25, bankroll=1000.0)
     sig = make_agg(confidence=0.75, edge=0.06, multiplier=1.0)
     size = a.compute_size(sig, drawdown=0.5)
-    assert size == 1.0  # floor enforced, not zero
+    assert size == 0.0  # dd_scalar=0 → no position, not floored at $1
 
 
 def test_allocator_update_capital():

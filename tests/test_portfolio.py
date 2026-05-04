@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import portfolio as pm
-import logger as lg
+from observability import logger as lg
 
 
 @pytest.fixture(autouse=True)
@@ -17,8 +17,12 @@ def isolated_db(tmp_path, monkeypatch):
     lg.init_db()
     # Reset portfolio singleton
     pm._portfolio = None
+    # Reset RiskManager singleton so position/cooldown state doesn't bleed between tests
+    from portfolio.risk import RiskManager
+    RiskManager._singleton = None
     yield
     pm._portfolio = None
+    RiskManager._singleton = None
 
 
 def _fresh_portfolio():
@@ -182,5 +186,5 @@ def test_get_sharpe_ratio_known_sequence():
     import math
     mean = 0.02
     std = math.sqrt(((0.01-0.02)**2 + (0.02-0.02)**2 + (0.03-0.02)**2) / 2)
-    expected = round(mean / std * math.sqrt(252), 4)
+    expected = round(mean / std, 4)  # per-trade Sharpe, no sqrt(252) annualization
     assert sharpe == pytest.approx(expected)

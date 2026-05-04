@@ -80,6 +80,7 @@ def check_resolutions() -> int:
                 params={"condition_id": market_id},
                 timeout=10,
             )
+            resp.raise_for_status()
             data = resp.json()
             items = data if isinstance(data, list) else data.get("data", [])
             if not items:
@@ -163,15 +164,12 @@ def get_report() -> CalibrationReport:
     total = 0
 
     for trade in trades:
-        conf = float(trade.get("materiality", 0.5))     # materiality is the closest proxy for raw confidence
+        conf = float(trade.get("claude_score") or trade.get("materiality") or 0.5)
         correct = bool(trade.get("correct", False))
         source = trade.get("news_source", "unknown")
         category = trade.get("category", "unknown")
 
-        predicted_prob = conf if correct else (1.0 - conf)
-        actual = 1.0 if correct else 0.0
-
-        brier = (predicted_prob - actual) ** 2
+        brier = (conf - 1.0) ** 2 if correct else conf ** 2
         total_brier += brier
         total += 1
         total_correct += int(correct)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import time
@@ -14,8 +15,32 @@ log = logging.getLogger(__name__)
 
 _client = None
 
-# 3 passes × max 3 concurrent events = 9 in-flight; well within Groq free tier (30 RPM)
-_groq_semaphore = asyncio.Semaphore(9)
+# Concurrency cap: 3 in-flight at once to spread RPM budget across the window.
+_groq_semaphore = asyncio.Semaphore(3)
+
+# Token-bucket rate limiter: max 25 calls per 60-second rolling window.
+# Groq free tier is 30 RPM; leave 5 RPM headroom for retries.
+_GROQ_MAX_RPM = 25
+_groq_call_times: collections.deque = collections.deque()
+_groq_rate_lock = asyncio.Lock()
+
+
+async def _wait_for_rate_limit():
+    """Block until a Groq call slot is available within the 25 RPM budget."""
+    async with _groq_rate_lock:
+        now = time.monotonic()
+        # Evict timestamps older than 60 seconds
+        while _groq_call_times and now - _groq_call_times[0] > 60.0:
+            _groq_call_times.popleft()
+        if len(_groq_call_times) >= _GROQ_MAX_RPM:
+            wait = 60.0 - (now - _groq_call_times[0]) + 0.05
+            log.debug(f"[classifier] RPM budget full — waiting {wait:.1f}s")
+            await asyncio.sleep(wait)
+            # Re-evict after sleep
+            now = time.monotonic()
+            while _groq_call_times and now - _groq_call_times[0] > 60.0:
+                _groq_call_times.popleft()
+        _groq_call_times.append(time.monotonic())
 
 
 def _get_client():
@@ -62,7 +87,7 @@ Respond ONLY with valid JSON matching this schema exactly:
   "confidence": <float 0.0 to 1.0>,
   "materiality": <float 0.0 to 1.0>,
   "novelty_score": <float 0.0 to 1.0>,
-  "time_sensitivity": "instant" | "short-term" | "long-term",
+  "time_sensitivity": "immediate" | "short-term" | "long-term",
   "reasoning": "<one concise sentence>"
 }}
 
@@ -71,7 +96,7 @@ Field definitions:
 - confidence: how certain are you that the direction is correct? (0=uncertain, 1=definitive)
 - materiality: how much should this actually move the price? (0=noise, 1=game-changer)
 - novelty_score: is this genuinely new information? (0=already known/priced in, 1=completely new)
-- time_sensitivity: how quickly will markets react? (instant=seconds, short-term=hours/days, long-term=weeks+)
+- time_sensitivity: how quickly will markets react? (immediate=seconds, short-term=hours/days, long-term=weeks+)
 - reasoning: one concise sentence explaining your assessment
 """
 
@@ -134,21 +159,29 @@ async def _single_pass(
         source=source,
     )
     try:
+        if config.USE_GROQ:
+            await _wait_for_rate_limit()
         async with _groq_semaphore:
             if config.USE_GROQ:
-                response = await client.chat.completions.create(
-                    model=config.CLASSIFICATION_MODEL,
-                    max_tokens=256,
-                    temperature=0.15,
-                    messages=[{"role": "user", "content": prompt}],
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=config.CLASSIFICATION_MODEL,
+                        max_tokens=256,
+                        temperature=0.15,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                    timeout=15.0,
                 )
                 raw = response.choices[0].message.content.strip()
             else:
-                response = await client.messages.create(
-                    model=config.CLASSIFICATION_MODEL,
-                    max_tokens=256,
-                    temperature=0.15,
-                    messages=[{"role": "user", "content": prompt}],
+                response = await asyncio.wait_for(
+                    client.messages.create(
+                        model=config.CLASSIFICATION_MODEL,
+                        max_tokens=256,
+                        temperature=0.15,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                    timeout=15.0,
                 )
                 raw = response.content[0].text.strip()
 
@@ -167,7 +200,7 @@ async def _single_pass(
             direction = "NEUTRAL"
 
         ts = result.get("time_sensitivity", "short-term")
-        if ts not in ("instant", "short-term", "long-term"):
+        if ts not in ("immediate", "short-term", "long-term"):
             ts = "short-term"
 
         return ClassificationPass(
@@ -180,9 +213,20 @@ async def _single_pass(
             latency_ms=latency,
         )
 
+    except asyncio.TimeoutError:
+        latency = int((time.monotonic() - start) * 1000)
+        log.warning("[classifier] LLM call timed out after 15s — semaphore released")
+        return ClassificationPass(
+            direction="NEUTRAL", confidence=0.0, materiality=0.0,
+            novelty_score=0.0, time_sensitivity="short-term",
+            reasoning="timeout", latency_ms=latency, error=True,
+        )
     except Exception as e:
         latency = int((time.monotonic() - start) * 1000)
-        log.debug(f"[classifier] pass error: {e}")
+        if "429" in str(e) or "RateLimitError" in type(e).__name__:
+            log.warning(f"[classifier] LLM rate limited: {type(e).__name__}")
+        else:
+            log.debug(f"[classifier] pass error: {e}")
         return ClassificationPass(
             direction="NEUTRAL",
             confidence=0.0,
@@ -225,12 +269,12 @@ async def classify_async(
 
     direction_counts = Counter(p.direction for p in valid)
     majority_direction, majority_count = direction_counts.most_common(1)[0]
-    consistency = majority_count / len(valid)
+    consistency = majority_count / n
 
     agreeing = [p for p in valid if p.direction == majority_direction]
     mean_confidence = sum(p.confidence for p in agreeing) / len(agreeing)
-    mean_materiality = sum(p.materiality for p in valid) / len(valid)
-    mean_novelty = sum(p.novelty_score for p in valid) / len(valid)
+    mean_materiality = sum(p.materiality for p in agreeing) / len(agreeing)
+    mean_novelty = sum(p.novelty_score for p in agreeing) / len(agreeing)
 
     ts_counts = Counter(p.time_sensitivity for p in agreeing)
     best_ts = ts_counts.most_common(1)[0][0]
@@ -261,20 +305,6 @@ async def classify_async(
     return result
 
 
-def classify(
-    headline: str,
-    market: Market,
-    source: str = "unknown",
-) -> Classification:
-    try:
-        loop = asyncio.get_running_loop()
-        import concurrent.futures
-        future = asyncio.run_coroutine_threadsafe(
-            classify_async(headline, market, source), loop
-        )
-        return future.result(timeout=30)
-    except RuntimeError:
-        return asyncio.run(classify_async(headline, market, source))
 
 
 if __name__ == "__main__":

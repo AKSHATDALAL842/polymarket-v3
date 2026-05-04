@@ -272,12 +272,13 @@ async def ws_signals(websocket: WebSocket):
     Each message: {"type": "signal", "side": "YES"|"NO", "market": "...", ...}
     Sends a heartbeat {"type": "ping"} every 30s to keep connection alive.
     """
-    import broadcaster
+    from observability import broadcaster
 
     await websocket.accept()
     q = broadcaster.subscribe()
     log.info("[api] WebSocket client connected")
 
+    ping_task = None
     try:
         ping_task = asyncio.create_task(_ws_ping(websocket))
         while True:
@@ -286,11 +287,14 @@ async def ws_signals(websocket: WebSocket):
                 await websocket.send_text(json.dumps(data))
             except asyncio.TimeoutError:
                 continue
-    except (WebSocketDisconnect, Exception):
+    except WebSocketDisconnect:
         pass
+    except Exception as e:
+        log.debug(f"[api] WebSocket error: {e}")
     finally:
         broadcaster.unsubscribe(q)
-        ping_task.cancel()
+        if ping_task is not None:
+            ping_task.cancel()
         log.info("[api] WebSocket client disconnected")
 
 

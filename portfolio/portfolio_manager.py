@@ -45,6 +45,12 @@ class PortfolioManager:
         from execution.execution_engine import ExecutionEngine
 
         t0 = time.monotonic()
+        # Sync allocator bankroll with actual paper balance so sizing adapts.
+        try:
+            from portfolio._paper import get_portfolio as _gp
+            self._allocator.update_capital(_gp().balance)
+        except Exception:
+            pass
         size_usd = self._allocator.compute_size(signal, drawdown=self._get_current_drawdown())
         decision = self._risk_engine.validate(signal, size_usd)
 
@@ -60,6 +66,14 @@ class PortfolioManager:
 
         result = ExecutionEngine.instance().execute({"signal": signal, "size_usd": size_usd})
         self._log_decision(signal, size_usd, result.status, int((time.monotonic()-t0)*1000))
+
+        if not result.success:
+            # Slot was reserved by risk_engine.validate() but execution failed.
+            # Release it so future trades are not permanently blocked.
+            from portfolio.risk import RiskManager
+            category = getattr(signal.market, "category", "unknown") if signal.market else "unknown"
+            RiskManager.instance().release_position_slot(signal.market_id, category)
+
         return result
 
     def _get_current_drawdown(self) -> float:

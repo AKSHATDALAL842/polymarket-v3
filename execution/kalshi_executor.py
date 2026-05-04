@@ -89,7 +89,9 @@ def _execute_live(signal: Signal, exec_start: float):
         "type": config.ORDER_TYPE,
         "action": "buy",
         "side": side,
-        "yes_price": limit_cents,           # Kalshi always uses yes_price field
+        # Kalshi uses yes_price field for both sides.
+        # For a NO buy, yes_price must be the YES equivalent (100 - no_limit_cents).
+        "yes_price": limit_cents if side == "yes" else max(1, 100 - limit_cents),
         "count": count,
     }
 

@@ -20,7 +20,7 @@ _embed_fn: EmbedFn | None = None
 def _load_sentence_transformers() -> EmbedFn:
     try:
         import os
-        hf_token = os.getenv("HF_TOKEN") or config.ANTHROPIC_API_KEY and None
+        hf_token = os.getenv("HF_TOKEN") or None
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer("all-MiniLM-L6-v2", token=hf_token or None)
         log.info("[matcher] Loaded sentence-transformers (all-MiniLM-L6-v2)")

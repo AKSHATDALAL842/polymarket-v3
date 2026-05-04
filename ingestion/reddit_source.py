@@ -47,7 +47,7 @@ _LOW_SIGNAL_PHRASES = {
     "eli5", "explain", "question",
 }
 
-DB_PATH = Path(__file__).parent / "trades.db"
+DB_PATH = Path(__file__).parent / "subreddit_stats.db"
 
 
 def _conn() -> sqlite3.Connection:

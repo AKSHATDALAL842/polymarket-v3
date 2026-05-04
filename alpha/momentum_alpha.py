@@ -96,15 +96,13 @@ class MomentumAlpha(BaseAlpha):
         if len(self._price_history) < 3:
             return None
         cutoff = time.time() - WINDOW_SECONDS
-        old_price = None
-        for ts, price in self._price_history:
-            if ts <= cutoff:
-                old_price = price
-            else:
-                break
-        if old_price is None:
+        history_in_window = [(ts, p) for ts, p in self._price_history if ts >= cutoff]
+        if not history_in_window:
             return None
+        old_price = history_in_window[0][1]
         current_price = self._price_history[-1][1]
+        if old_price == 0:
+            return None
         return (current_price - old_price) / old_price
 
     def _update_buffer(self, watcher, momentum: float):

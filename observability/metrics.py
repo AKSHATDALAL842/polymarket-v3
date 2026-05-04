@@ -91,7 +91,7 @@ class MetricsTracker:
             std = statistics.stdev(self._pnl_window)
             if std == 0:
                 return 0.0
-            return mean / std * (252 ** 0.5)  # annualized
+            return mean / std  # per-trade Sharpe (not annualized — trades are not daily)
         except Exception:
             return 0.0
 

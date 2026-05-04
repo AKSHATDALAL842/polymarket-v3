@@ -124,7 +124,10 @@ def scrape_all(lookback_hours: int | None = None, feeds=None) -> list[NewsItem]:
         all_items.extend(scrape_rss(feed_url, hours))
         time.sleep(0.5)  # polite crawling
 
-    all_items.extend(scrape_newsapi("AI OR artificial intelligence OR crypto OR blockchain", hours))
+    from ingestion.categories import get_newsapi_queries
+    cats = config.SELECTED_CATEGORIES if config.SELECTED_CATEGORIES != ["all"] else None
+    for query in get_newsapi_queries(cats or getattr(config, "MARKET_CATEGORIES", [])):
+        all_items.extend(scrape_newsapi(query, hours))
 
     unique = deduplicate(all_items)
     unique.sort(key=lambda x: x.published_at, reverse=True)

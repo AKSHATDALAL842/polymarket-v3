@@ -125,6 +125,7 @@ def _migrate_v2_columns(conn):
         ("total_latency_ms", "INTEGER"),
         ("category", "TEXT"),
         ("platform", "TEXT"),
+        ("mode", "TEXT"),
     ]
     for col_name, col_type in new_cols:
         if col_name not in columns:
@@ -152,7 +153,11 @@ def log_trade(
     total_latency_ms: int | None = None,
     category: str | None = None,
     platform: str | None = None,
+    mode: str | None = None,
 ) -> int:
+    import config as _cfg
+    if mode is None:
+        mode = "paper" if _cfg.DRY_RUN else "live"
     conn = _conn()
     cur = conn.execute(
         """INSERT INTO trades
@@ -160,13 +165,13 @@ def log_trade(
             side, amount_usd, order_id, status, reasoning, headlines,
             news_source, classification, materiality,
             news_latency_ms, classification_latency_ms, total_latency_ms,
-            category, platform)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            category, platform, mode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (market_id, market_question, claude_score, market_price, edge,
          side, amount_usd, order_id, status, reasoning, headlines,
          news_source, classification, materiality,
          news_latency_ms, classification_latency_ms, total_latency_ms,
-         category, platform),
+         category, platform, mode),
     )
     trade_id = cur.lastrowid
     conn.commit()
@@ -244,24 +249,37 @@ def log_run_end(run_id: int, markets_scanned: int, signals_found: int, trades_pl
     conn.close()
 
 
-def get_daily_pnl() -> float:
+def get_daily_pnl(mode: str | None = None) -> float:
     """
     Returns net P&L for today.
     Uses outcomes table when available; falls back to -amount_usd (capital at risk)
     for trades without resolved outcomes.
+    Pass mode='paper' or mode='live' to restrict to a single mode.
     """
     conn = _conn()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    row = conn.execute(
-        """SELECT
-               COALESCE(SUM(o.pnl), 0) as resolved_pnl,
-               COALESCE(SUM(CASE WHEN o.pnl IS NULL AND t.status IN ('executed','dry_run')
-                                 THEN -t.amount_usd ELSE 0 END), 0) as open_exposure
-           FROM trades t
-           LEFT JOIN outcomes o ON o.trade_id = t.id
-           WHERE t.created_at LIKE ?""",
-        (f"{today}%",),
-    ).fetchone()
+    if mode:
+        row = conn.execute(
+            """SELECT
+                   COALESCE(SUM(o.pnl), 0) as resolved_pnl,
+                   COALESCE(SUM(CASE WHEN o.pnl IS NULL AND t.status IN ('executed','dry_run')
+                                     THEN -t.amount_usd ELSE 0 END), 0) as open_exposure
+               FROM trades t
+               LEFT JOIN outcomes o ON o.trade_id = t.id
+               WHERE t.created_at LIKE ? AND (t.mode = ? OR t.mode IS NULL)""",
+            (f"{today}%", mode),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT
+                   COALESCE(SUM(o.pnl), 0) as resolved_pnl,
+                   COALESCE(SUM(CASE WHEN o.pnl IS NULL AND t.status IN ('executed','dry_run')
+                                     THEN -t.amount_usd ELSE 0 END), 0) as open_exposure
+               FROM trades t
+               LEFT JOIN outcomes o ON o.trade_id = t.id
+               WHERE t.created_at LIKE ?""",
+            (f"{today}%",),
+        ).fetchone()
     conn.close()
     return (row["resolved_pnl"] or 0.0) + (row["open_exposure"] or 0.0)
 

@@ -173,6 +173,9 @@ def _infer_category(question: str, tags: list) -> str:
         return "ai"
     if any(kw in combined for kw in ["bitcoin", "ethereum", "crypto", "blockchain", "defi", "token"]):
         return "crypto"
+    if any(kw in combined for kw in ["fed", "federal reserve", "inflation", "interest rate",
+                                      "gdp", "recession", "cpi", "fomc", "treasury"]):
+        return "economics"
     if any(kw in combined for kw in ["election", "president", "congress", "senate", "trump", "biden", "political"]):
         return "politics"
     if any(kw in combined for kw in ["spacex", "nasa", "climate", "research", "study", "discovery"]):

@@ -40,6 +40,10 @@ class Portfolio:
         self.daily_returns: list[float] = []
         self._peak_value: float = initial_balance
         self._realized_pnl: float = 0.0
+        self._watcher = None  # set via set_watcher() from Pipeline after startup
+
+    def set_watcher(self, watcher) -> None:
+        self._watcher = watcher
 
     def simulate_trade(self, signal) -> "ExecutionResult":
         from execution.executor import ExecutionResult, _log_trade
@@ -124,30 +128,42 @@ class Portfolio:
         pos.exit_price = exit_price
         pos.realized_pnl = realized_pnl
         pos.closed_at = now
-        lg.update_position_closed(
-            position_id=pos.position_id, exit_price=exit_price,
-            realized_pnl=realized_pnl, closed_at=now.isoformat(),
-        )
+        try:
+            lg.update_position_closed(
+                position_id=pos.position_id, exit_price=exit_price,
+                realized_pnl=realized_pnl, closed_at=now.isoformat(),
+            )
+        except ValueError as e:
+            log.warning(f"[portfolio] Could not update DB for closed position {market_id}: {e}")
         daily_return = realized_pnl / pos.size_usd if pos.size_usd > 0 else 0.0
         self.daily_returns.append(daily_return)
         current_value = self._total_value()
         if current_value > self._peak_value:
             self._peak_value = current_value
+
+        # Release the RiskManager slot so position limits stay accurate.
+        try:
+            from portfolio.risk import RiskManager
+            RiskManager.instance().on_trade_closed(
+                condition_id=market_id,
+                category=pos.category,
+                pnl=realized_pnl,
+            )
+        except Exception as e:
+            log.warning(f"[portfolio] RiskManager.on_trade_closed failed: {e!r}")
+
         return realized_pnl
 
     def get_unrealized_pnl(self) -> float:
+        if self._watcher is None:
+            return 0.0
         total = 0.0
-        try:
-            from ingestion.market_watcher import MarketWatcher
-            watcher = MarketWatcher()
-            for market_id, pos in list(self.positions.items()):
-                if pos.status != "open":
-                    continue
-                snap = watcher.get_snapshot(market_id)
-                if snap:
-                    total += self.mark_to_market(market_id, snap.yes_price)
-        except Exception:
-            pass
+        for market_id, pos in list(self.positions.items()):
+            if pos.status != "open":
+                continue
+            snap = self._watcher.get_snapshot(market_id)
+            if snap:
+                total += self.mark_to_market(market_id, snap.yes_price)
         return total
 
     def _total_value(self) -> float:
@@ -155,11 +171,7 @@ class Portfolio:
 
     def get_portfolio_state(self) -> dict:
         open_positions = []
-        try:
-            from ingestion.market_watcher import MarketWatcher
-            watcher = MarketWatcher()
-        except Exception:
-            watcher = None
+        watcher = self._watcher
 
         for p in list(self.positions.values()):
             if p.status != "open":
@@ -200,19 +212,22 @@ class Portfolio:
         }
 
     def get_sharpe_ratio(self) -> Optional[float]:
-        """Annualized Sharpe from daily returns. None if fewer than 2 data points."""
+        """Per-trade Sharpe ratio. None if fewer than 2 data points."""
         if len(self.daily_returns) < 2:
             return None
         mean = sum(self.daily_returns) / len(self.daily_returns)
         variance = sum((r - mean) ** 2 for r in self.daily_returns) / (len(self.daily_returns) - 1)
         std = math.sqrt(variance)
-        return round(mean / std * math.sqrt(252), 4) if std > 0 else None
+        return round(mean / std, 4) if std > 0 else None
 
     def get_max_drawdown(self) -> float:
         """Peak-to-trough as fraction of peak value. Range [0, 1]."""
+        current_value = self._total_value()
+        if current_value > self._peak_value:
+            self._peak_value = current_value
         if self._peak_value <= 0:
             return 0.0
-        return max(0.0, (self._peak_value - self._total_value()) / self._peak_value)
+        return max(0.0, (self._peak_value - current_value) / self._peak_value)
 
 
 def get_portfolio() -> Portfolio:

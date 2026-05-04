@@ -12,6 +12,8 @@ from ingestion.market_watcher import MarketWatcher
 from signal.matcher import match_news_to_markets, update_market_embeddings
 from signal.classifier import classify_async
 from signal.edge_model import compute_edge
+from signal import fast_classifier
+from signal.cold_path import get_cold_path_worker, ColdPathJob
 from portfolio.risk import RiskManager
 from observability.metrics import get_tracker
 from signal import nlp_processor
@@ -27,7 +29,8 @@ log = logging.getLogger(__name__)
 class Pipeline:
 
     def __init__(self, dry_run: bool | None = None):
-        self.dry_run = dry_run if dry_run is not None else config.DRY_RUN
+        if dry_run is not None:
+            config.DRY_RUN = dry_run
         self.watcher = MarketWatcher()
         self._news_queue: asyncio.Queue = asyncio.Queue()
         self._news_aggregator: Optional[NewsStream] = None
@@ -39,14 +42,22 @@ class Pipeline:
         self._last_signal_time: dict[str, float] = {}
         self._momentum_alpha = MomentumAlpha()
         self._news_alpha = NewsAlpha()
+        self._cold_path = get_cold_path_worker()
 
     async def run(self):
         self._start_time = time.monotonic()
-        log.info(f"[pipeline] Starting V3 pipeline {'(DRY RUN)' if self.dry_run else '(LIVE)'}")
+        log.info(f"[pipeline] Starting V3 pipeline {'(DRY RUN)' if config.DRY_RUN else '(LIVE)'}")
 
         await self.watcher.refresh_markets()
         update_market_embeddings(self.watcher.tracked_markets)
         log.info(f"[pipeline] Loaded {len(self.watcher.tracked_markets)} niche markets")
+
+        # Inject the shared watcher so get_unrealized_pnl() reads live prices
+        # instead of creating a fresh empty MarketWatcher that has no snapshots.
+        from portfolio._paper import get_portfolio
+        get_portfolio().set_watcher(self.watcher)
+        from execution.execution_engine import ExecutionEngine
+        ExecutionEngine.instance().set_watcher(self.watcher)
 
         self._news_aggregator = NewsStream(self._news_queue)
 
@@ -55,6 +66,7 @@ class Pipeline:
             self._news_aggregator.run(),
             self._consume_news_queue(),
             self._momentum_alpha.run(self.watcher),
+            self._cold_path.run(),
             return_exceptions=True,
         )
         for r in results:
@@ -62,11 +74,16 @@ class Pipeline:
                 log.error(f"[pipeline] Top-level task failed: {r}")
 
     async def _consume_news_queue(self):
+        _queue_high = False  # hysteresis flag — warn once, reset when depth drops
         while True:
             event: NewsEvent = await self._news_queue.get()
             qsize = self._news_queue.qsize()
-            if qsize > 50:
-                log.warning(f"[pipeline] Queue depth={qsize} — events may lag behind news ingestion")
+            if qsize > 50 and not _queue_high:
+                log.warning(f"[pipeline] Queue depth={qsize} — events lagging behind ingestion")
+                _queue_high = True
+            elif qsize <= 10 and _queue_high:
+                log.info(f"[pipeline] Queue depth recovered ({qsize})")
+                _queue_high = False
             # fire-and-forget so one slow classification doesn't block the next event
             asyncio.create_task(
                 self._handle_event(event),
@@ -146,11 +163,29 @@ class Pipeline:
             return
 
         cls_start = time.monotonic()
-        # fetch order book while the LLM is classifying — saves ~200ms per market
-        classification, ob = await asyncio.gather(
-            classify_async(headline=event.headline, market=market, source=event.source),
-            self.watcher.fetch_order_book(market),
-        )
+
+        if config.HOT_PATH_ENABLED and fast_classifier.is_trained():
+            fast_result = fast_classifier.predict(
+                headline=event.headline,
+                source=event.source,
+                market_yes_price=market.yes_price,
+                age_seconds=event.age_seconds(),
+            )
+            if fast_result.confidence < config.FAST_CLASSIFIER_MIN_CONFIDENCE:
+                log.debug(
+                    f"[pipeline] hot path filtered: conf={fast_result.confidence:.2f} "
+                    f"method={fast_result.method} '{market.question[:40]}'"
+                )
+                return
+            classification = fast_classifier.build_classification(fast_result)
+            ob = await self.watcher.fetch_order_book(market)
+        else:
+            # fetch order book while the LLM is classifying — saves ~200ms per market
+            classification, ob = await asyncio.gather(
+                classify_async(headline=event.headline, market=market, source=event.source),
+                self.watcher.fetch_order_book(market),
+            )
+
         cls_latency_ms = int((time.monotonic() - cls_start) * 1000)
 
         log.debug(
@@ -184,6 +219,16 @@ class Pipeline:
         )
         if signal is None:
             return
+
+        if snap and config.HOT_PATH_ENABLED and hasattr(snap, "yes_price"):
+            predicted_move = abs(signal.p_true - market.yes_price)
+            actual_move = abs(snap.yes_price - market.yes_price)
+            if predicted_move > 0 and actual_move >= predicted_move * config.STALENESS_THRESHOLD:
+                log.info(
+                    f"[pipeline] Staleness abort: market already moved "
+                    f"{actual_move:.3f} of predicted {predicted_move:.3f} — '{market.question[:45]}'"
+                )
+                return
 
         self._last_signal_time[market.condition_id] = time.monotonic()
 
@@ -228,13 +273,25 @@ class Pipeline:
         aggregated = combine(all_alpha_sigs)
         result = await PortfolioManager.instance().process_signal_async(aggregated)
 
+        # Position slot was reserved atomically by risk_engine.validate() via
+        # try_open_position(). Do NOT call on_trade_opened() here — that would
+        # double-count the position and hit the limit after half the allowed trades.
         if result.success and result.filled_size > 0:
-            self.risk.on_trade_opened(
-                condition_id=market.condition_id,
-                category=market.category,
-                amount_usd=result.filled_size,
-            )
             self.metrics.record_trade(pnl=0.0, ev=signal.ev, latency_ms=result.latency_ms)
+
+        if config.HOT_PATH_ENABLED:
+            is_loss = result.filled_size == 0 or result.status in ("error", "rejected", "skipped")
+            fast_conf = classification.confidence if config.HOT_PATH_ENABLED else 0.0
+            self._cold_path.submit(ColdPathJob(
+                headline=event.headline,
+                source=event.source,
+                market_id=market.condition_id,
+                market_question=market.question,
+                yes_price=market.yes_price,
+                fast_confidence=fast_conf,
+                is_loss_trade=is_loss,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ))
 
         log.info(
             f"[pipeline] ✓ {result.status} {signal.side} ${result.filled_size:.2f} "
@@ -273,7 +330,16 @@ class Pipeline:
 
 
 def run_pipeline_v2(dry_run: bool | None = None):
+    import signal as _signal
+
     pipeline = Pipeline(dry_run=dry_run)
+
+    def _handle_sigterm(signum, frame):
+        log.info("[pipeline] SIGTERM received — shutting down")
+        raise KeyboardInterrupt
+
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     try:
         asyncio.run(pipeline.run())
     except KeyboardInterrupt:

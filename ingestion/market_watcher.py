@@ -102,7 +102,7 @@ class MarketSnapshot:
     def spread(self) -> float:
         if self.order_book.spread < 0.001:
             p = self.last_price
-            return max(0.01, min(0.1, 0.02 + 0.03 * (1 - abs(p - 0.5) * 2)))
+            return max(0.01, min(0.1, 0.02 + 0.06 * abs(p - 0.5) * 2))
         return self.order_book.spread
 
     @property

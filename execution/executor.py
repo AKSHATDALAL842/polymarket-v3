@@ -36,12 +36,10 @@ def _check_risk_gates(signal: Signal) -> str | None:
     if not rm.can_trade_daily():
         return "rejected_daily_limit"
 
-    if not rm.can_open_position():
-        return "rejected_max_positions"
-
-    category = signal.market.category
-    if not rm.can_trade_category(category, signal.bet_amount):
-        return f"rejected_category_exposure_{category}"
+    # Position-count and category-exposure checks are intentionally absent here.
+    # They are enforced atomically by risk_engine.validate() → try_open_position()
+    # before execution begins. Checking them again here would false-reject trades
+    # whose slots are already reserved and counted in _open_positions.
 
     if rm.in_cooldown():
         return "rejected_cooldown"
@@ -140,6 +138,9 @@ def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
             latency_ms=0,
         )
 
+    import uuid as _uuid
+    client_order_id = str(_uuid.uuid4())  # one ID reused across all retries for idempotency
+
     last_error = ""
     for attempt in range(config.ORDER_RETRY_ATTEMPTS):
         try:
@@ -149,6 +150,8 @@ def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
                 side="BUY",
                 token_id=token_id,
             )
+            if hasattr(order_args, "client_order_id"):
+                order_args.client_order_id = client_order_id
             signed_order = client.create_order(order_args)
             resp = client.post_order(signed_order, OrderType.GTC)
 
