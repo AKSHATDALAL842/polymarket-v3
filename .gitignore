@@ -61,3 +61,9 @@ Kalshi_pvt_key.txt
 # Node
 node_modules/
 package-lock.json
+
+# Local reference docs (not for repo)
+understand/
+.codex/
+prompt.txt
+LLMChanges.txt
