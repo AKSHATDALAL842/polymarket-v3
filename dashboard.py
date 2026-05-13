@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Polymarket Pipeline — Live Terminal Dashboard
-Bloomberg Terminal aesthetic. Runs the real pipeline on a loop.
-"""
 from __future__ import annotations
 
 import time
@@ -20,10 +16,7 @@ from rich import box
 import config
 from observability import logger
 from ingestion.scraper import scrape_all
-from ingestion.markets import fetch_active_markets, filter_by_categories, Market
-from observability.scorer import score_market, filter_news_for_market
-from signal.edge_model import detect_edge_v2 as detect_edge
-from execution.executor import execute_trade
+from ingestion.markets import fetch_active_markets, filter_by_categories
 
 console = Console()
 
@@ -36,18 +29,12 @@ MUTED = "dim white"
 
 
 class PipelineState:
-    """Track live pipeline state across scan cycles."""
-
     def __init__(self):
         self.run_number = 0
         self.markets_scanned = 0
         self.headlines_found = 0
-        self.signals_found = 0
-        self.trades_executed = 0
-        self.latest_signals = []
-        self.latest_markets = []
         self.latest_headlines = []
-        self.latest_scores = {}
+        self.latest_markets = []
         self.scanning = False
         self.scan_status = "Initializing..."
 
@@ -56,7 +43,6 @@ state = PipelineState()
 
 
 def run_scan_cycle():
-    """Execute one full pipeline scan and update state."""
     state.run_number += 1
     state.scanning = True
     state.scan_status = "Scraping news..."
@@ -74,29 +60,6 @@ def run_scan_cycle():
     state.markets_scanned = len(markets)
     state.latest_markets = markets
 
-    signals = []
-    scores = {}
-    for i, market in enumerate(markets):
-        state.scan_status = f"Scoring [{i + 1}/{len(markets)}] {market.question[:40]}..."
-        relevant = filter_news_for_market(market, news)
-        result = score_market(market, relevant)
-        scores[market.condition_id] = result
-
-        headlines_str = "\n".join(n.headline for n in relevant[:5])
-        signal = detect_edge(market, result["confidence"], result["reasoning"], headlines_str)
-        if signal:
-            trade_result = execute_trade(signal)
-            signals.append({
-                "market": market,
-                "score": result,
-                "trade": trade_result,
-            })
-        time.sleep(0.3)
-
-    state.latest_signals = signals
-    state.latest_scores = scores
-    state.signals_found = len(signals)
-    state.trades_executed = len(signals)
     state.scanning = False
     state.scan_status = "Idle — waiting for next cycle"
 
@@ -131,7 +94,7 @@ def render_header() -> Panel:
     grid.add_column(justify="right", ratio=1)
     grid.add_row(
         Text(" POLYMARKET PIPELINE", style="bold bright_green"),
-        Text("NEWS SCRAPER + AI CONFIDENCE SCORER + AUTO TRADER", style=DIM),
+        Text("NEWS MONITOR + MARKET DISPLAY", style=DIM),
         Text(f"{now} ", style=MUTED),
     )
     return Panel(grid, style="bright_green", box=box.HEAVY)
@@ -152,18 +115,16 @@ def render_status() -> Panel:
         status_dot = "[yellow]○[/yellow]"
         status_text = f"{status_dot} STARTING"
 
-    mode = "[bright_green]LIVE[/bright_green]" if not config.DRY_RUN else f"[{WARN}]DRY RUN[/{WARN}]"
-
     table.add_row("Pipeline", status_text)
     table.add_row("Scan Cycle", f"#{state.run_number}" if state.run_number > 0 else "—")
     table.add_row("Activity", f"[{DIM}]{state.scan_status[:30]}[/{DIM}]")
     table.add_row("Markets Scanned", str(state.markets_scanned) if state.run_number > 0 else "—")
     table.add_row("Headlines Found", str(state.headlines_found) if state.run_number > 0 else "—")
-    table.add_row("Signals / Trades", f"{state.signals_found} / {state.trades_executed}" if state.run_number > 0 else "— / —")
     table.add_row("", "")
     table.add_row("Edge Threshold", f">= {config.EDGE_THRESHOLD:.0%}")
     table.add_row("Max Bet", f"${config.MAX_BET_USD:.2f}")
     table.add_row("Daily Limit", f"${config.DAILY_LOSS_LIMIT_USD:.2f}")
+    mode = "[bright_green]LIVE[/bright_green]" if not config.DRY_RUN else f"[{WARN}]DRY RUN[/{WARN}]"
     table.add_row("Mode", mode)
 
     return Panel(table, title="[bold]PIPELINE STATUS[/bold]", border_style="bright_green", box=box.ROUNDED)
@@ -178,7 +139,8 @@ def render_performance() -> Panel:
     by_status = stats["by_status"]
     dry_runs = by_status.get("dry_run", 0)
     executed = by_status.get("executed", 0)
-    errors = sum(v for k, v in by_status.items() if k.startswith("error"))
+    paper = by_status.get("paper", 0)
+    errors = sum(v for k, v in by_status.items() if k.startswith("error") or "rejected" in k)
 
     total_wagered = sum(t.get("amount_usd", 0) for t in trades)
     avg_edge = sum(t.get("edge", 0) for t in trades) / max(len(trades), 1) * 100
@@ -188,8 +150,10 @@ def render_performance() -> Panel:
     table.add_column("value")
 
     table.add_row("Total Signals", f"[{ACCENT}]{total}[/{ACCENT}]")
-    table.add_row("Dry Runs", f"[{WARN}]{dry_runs}[/{WARN}]")
+    table.add_row("Paper Trades", f"[{WARN}]{paper}[/{WARN}]")
     table.add_row("Executed", f"[{WIN}]{executed}[/{WIN}]")
+    if dry_runs:
+        table.add_row("Dry Runs", f"[{WARN}]{dry_runs}[/{WARN}]")
     if errors:
         table.add_row("Errors", f"[{LOSS}]{errors}[/{LOSS}]")
     table.add_row("", "")
@@ -208,63 +172,25 @@ def render_performance() -> Panel:
 def render_scanner() -> Panel:
     content = Table(show_header=True, box=box.SIMPLE_HEAD, expand=True, padding=(0, 1))
     content.add_column("Market", max_width=38)
-    content.add_column("Mkt$", justify="right", width=5)
-    content.add_column("Claude", justify="right", width=6, style=ACCENT)
-    content.add_column("Edge", justify="right", width=6)
-    content.add_column("Side", justify="center", width=5)
-    content.add_column("Bet", justify="right", width=7)
-    content.add_column("Status", justify="center", width=9)
+    content.add_column("YES$", justify="right", width=5)
+    content.add_column("NO$", justify="right", width=5)
+    content.add_column("Volume", justify="right", width=10)
+    content.add_column("Category", justify="center", width=10)
 
     if not state.latest_markets:
-        content.add_row(f"[{DIM}]Waiting for first scan...[/{DIM}]", "", "", "", "", "", "")
-        return Panel(content, title="[bold]MARKET SCANNER[/bold]  ·  Claude Confidence vs Market Odds", border_style="bright_green", box=box.ROUNDED)
+        content.add_row(f"[{DIM}]Waiting for first scan...[/{DIM}]", "", "", "", "")
+        return Panel(content, title="[bold]MARKET WATCH[/bold]  ·  Active Markets", border_style="bright_green", box=box.ROUNDED)
 
-    signal_questions = set()
-    for sig in state.latest_signals[:5]:
-        m = sig["market"]
-        s = sig["score"]
-        t = sig["trade"]
-        signal_questions.add(m.question)
-        edge_pct = f"{abs(s['confidence'] - m.yes_price):.0%}"
-        side_style = WIN if t["side"] == "YES" else "bright_magenta"
-
-        status = t.get("status", "dry_run")
-        if status == "dry_run":
-            status_str = f"[{WARN}]DRY RUN[/{WARN}]"
-        elif status == "executed":
-            status_str = f"[{WIN}]FILLED[/{WIN}]"
-        else:
-            status_str = f"[{DIM}]{status[:9]}[/{DIM}]"
-
+    for m in state.latest_markets[:12]:
         content.add_row(
             m.question[:38],
             f"{m.yes_price:.2f}",
-            f"{s['confidence']:.2f}",
-            f"[{WIN}]{edge_pct}[/{WIN}]",
-            f"[{side_style}]{t['side']}[/{side_style}]",
-            f"${t['amount']:.0f}",
-            status_str,
+            f"{m.no_price:.2f}",
+            f"${m.volume:,.0f}",
+            m.category[:10],
         )
 
-    for m in state.latest_markets:
-        if m.question in signal_questions:
-            continue
-        if len(content.rows) >= 8:
-            break
-        score = state.latest_scores.get(m.condition_id, {})
-        confidence = score.get("confidence", 0.5)
-        edge = abs(confidence - m.yes_price)
-        content.add_row(
-            f"[{DIM}]{m.question[:38]}[/{DIM}]",
-            f"[{DIM}]{m.yes_price:.2f}[/{DIM}]",
-            f"[{DIM}]{confidence:.2f}[/{DIM}]",
-            f"[{DIM}]{edge:.0%}[/{DIM}]",
-            f"[{DIM}]—[/{DIM}]",
-            f"[{DIM}]—[/{DIM}]",
-            f"[{DIM}]no edge[/{DIM}]",
-        )
-
-    return Panel(content, title="[bold]MARKET SCANNER[/bold]  ·  Claude Confidence vs Market Odds", border_style="bright_green", box=box.ROUNDED)
+    return Panel(content, title="[bold]MARKET WATCH[/bold]  ·  Active Markets", border_style="bright_green", box=box.ROUNDED)
 
 
 def render_trades() -> Panel:
@@ -276,24 +202,25 @@ def render_trades() -> Panel:
     table.add_column("Side", justify="center", width=5)
     table.add_column("Bet", justify="right", width=7)
     table.add_column("Edge", justify="right", width=6)
-    table.add_column("Claude", justify="right", width=6)
     table.add_column("Mkt$", justify="right", width=5)
     table.add_column("Status", justify="center", width=9)
 
     if not trades:
-        table.add_row(f"[{DIM}]No trades yet — pipeline scanning...[/{DIM}]", "", "", "", "", "", "", "")
+        table.add_row(f"[{DIM}]No trades yet — run the pipeline to generate signals[/{DIM}]", "", "", "", "", "", "")
     else:
         for t in trades:
             side_style = WIN if t["side"] == "YES" else "bright_magenta"
             status = t["status"]
             if status == "dry_run":
-                status_str = f"[{WARN}]DRY RUN[/{WARN}]"
+                status_str = f"[{WARN}]DRY_RUN[/{WARN}]"
             elif status == "executed":
                 status_str = f"[{WIN}]FILLED[/{WIN}]"
+            elif status == "paper":
+                status_str = f"[{WARN}]PAPER[/{WARN}]"
             elif status.startswith("error"):
                 status_str = f"[{LOSS}]ERROR[/{LOSS}]"
-            elif status == "rejected_daily_limit":
-                status_str = f"[{LOSS}]LIMIT[/{LOSS}]"
+            elif "rejected" in status:
+                status_str = f"[{LOSS}]REJECTED[/{LOSS}]"
             else:
                 status_str = f"[{DIM}]{status[:9]}[/{DIM}]"
 
@@ -303,12 +230,11 @@ def render_trades() -> Panel:
                 f"[{side_style}]{t['side']}[/{side_style}]",
                 f"${t['amount_usd']:.2f}",
                 f"{t['edge']:.0%}",
-                f"{t['claude_score']:.2f}",
                 f"{t['market_price']:.2f}",
                 status_str,
             )
 
-    return Panel(table, title="[bold]TRADE LOG[/bold]  ·  Bets Placed by Pipeline", border_style="bright_cyan", box=box.ROUNDED)
+    return Panel(table, title="[bold]TRADE LOG[/bold]  ·  Recent Trades", border_style="bright_cyan", box=box.ROUNDED)
 
 
 def render_footer() -> Panel:
@@ -335,7 +261,6 @@ def render_footer() -> Panel:
 
 
 def run_dashboard(scan_interval: float = 60.0):
-    """Launch the live dashboard. Scans on a configurable interval."""
     layout = make_layout()
 
     layout["header"].update(render_header())
@@ -367,7 +292,7 @@ def run_dashboard(scan_interval: float = 60.0):
 
     except KeyboardInterrupt:
         stats = logger.get_trade_stats()
-        console.print(f"\n[{ACCENT}]Pipeline stopped. {stats['total_trades']} signals logged across {state.run_number} cycles.[/{ACCENT}]")
+        console.print(f"\n[{ACCENT}]Dashboard stopped. {stats['total_trades']} signals logged across {state.run_number} cycles.[/{ACCENT}]")
 
 
 if __name__ == "__main__":

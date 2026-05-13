@@ -184,6 +184,9 @@ FAST_CLASSIFIER_MIN_CONFIDENCE = float(os.getenv("FAST_CLASSIFIER_MIN_CONFIDENCE
 STALENESS_THRESHOLD           = float(os.getenv("STALENESS_THRESHOLD", "0.50"))
 HOT_PATH_CONSISTENCY          = float(os.getenv("HOT_PATH_CONSISTENCY", "0.70"))
 
+API_SECRET_KEY = os.getenv("API_SECRET_KEY", "")
+API_AUTH_ENABLED = bool(API_SECRET_KEY)
+
 
 def validate_config() -> list[str]:
     warnings: list[str] = []
@@ -236,6 +239,12 @@ def validate_config() -> list[str]:
         )
     if COOLDOWN_MINUTES < 1:
         warnings.append(f"COOLDOWN_MINUTES={COOLDOWN_MINUTES} is too short to be meaningful.")
+
+    if not API_SECRET_KEY:
+        warnings.append(
+            "API_SECRET_KEY is not set — the API server will run without authentication. "
+            "Anyone who can reach the server can view trades, portfolio state, and toggle live trading."
+        )
 
     return warnings
 

@@ -43,6 +43,8 @@ class Pipeline:
         self._momentum_alpha = MomentumAlpha()
         self._news_alpha = NewsAlpha()
         self._cold_path = get_cold_path_worker()
+        self._shutdown = asyncio.Event()
+        self._child_tasks: set[asyncio.Task] = set()
 
     async def run(self):
         self._start_time = time.monotonic()
@@ -52,8 +54,6 @@ class Pipeline:
         update_market_embeddings(self.watcher.tracked_markets)
         log.info(f"[pipeline] Loaded {len(self.watcher.tracked_markets)} niche markets")
 
-        # Inject the shared watcher so get_unrealized_pnl() reads live prices
-        # instead of creating a fresh empty MarketWatcher that has no snapshots.
         from portfolio._paper import get_portfolio
         get_portfolio().set_watcher(self.watcher)
         from execution.execution_engine import ExecutionEngine
@@ -61,22 +61,47 @@ class Pipeline:
 
         self._news_aggregator = NewsStream(self._news_queue)
 
-        results = await asyncio.gather(
-            self.watcher.run(),
-            self._news_aggregator.run(),
-            self._consume_news_queue(),
-            self._momentum_alpha.run(self.watcher),
-            self._cold_path.run(),
-            return_exceptions=True,
-        )
-        for r in results:
-            if isinstance(r, Exception):
-                log.error(f"[pipeline] Top-level task failed: {r}")
+        bg_tasks = [
+            asyncio.create_task(self.watcher.run(), name="watcher"),
+            asyncio.create_task(self._news_aggregator.run(), name="news_aggregator"),
+            asyncio.create_task(self._consume_news_queue(), name="news_consumer"),
+            asyncio.create_task(self._momentum_alpha.run(self.watcher), name="momentum_alpha"),
+            asyncio.create_task(self._cold_path.run(), name="cold_path"),
+        ]
+        shutdown_waiter = asyncio.create_task(self._shutdown.wait(), name="shutdown_waiter")
+
+        try:
+            done, _ = await asyncio.wait(
+                bg_tasks + [shutdown_waiter],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in done:
+                if t is not shutdown_waiter and not t.cancelled():
+                    exc = t.exception()
+                    if exc is not None:
+                        log.error("[pipeline] Background task %s failed: %s", t.get_name(), exc)
+        finally:
+            self._shutdown.set()
+            shutdown_waiter.cancel()
+            for t in bg_tasks:
+                t.cancel()
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
+            for t in list(self._child_tasks):
+                t.cancel()
+            if self._child_tasks:
+                await asyncio.gather(*self._child_tasks, return_exceptions=True)
+            log.info("[pipeline] Shutdown complete")
+
+    def signal_shutdown(self):
+        self._shutdown.set()
 
     async def _consume_news_queue(self):
-        _queue_high = False  # hysteresis flag — warn once, reset when depth drops
-        while True:
-            event: NewsEvent = await self._news_queue.get()
+        _queue_high = False
+        while not self._shutdown.is_set():
+            try:
+                event: NewsEvent = await asyncio.wait_for(self._news_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             qsize = self._news_queue.qsize()
             if qsize > 50 and not _queue_high:
                 log.warning(f"[pipeline] Queue depth={qsize} — events lagging behind ingestion")
@@ -84,13 +109,16 @@ class Pipeline:
             elif qsize <= 10 and _queue_high:
                 log.info(f"[pipeline] Queue depth recovered ({qsize})")
                 _queue_high = False
-            # fire-and-forget so one slow classification doesn't block the next event
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._handle_event(event),
                 name=f"event-{event.source}-{self._event_count}",
             )
+            self._child_tasks.add(task)
+            task.add_done_callback(self._child_tasks.discard)
 
     async def _handle_event(self, event: NewsEvent):
+        if self._shutdown.is_set():
+            return
         t0 = time.monotonic()
         self._event_count += 1
 
@@ -157,6 +185,8 @@ class Pipeline:
         news_latency_ms: int,
         t0: float,
     ):
+        if self._shutdown.is_set():
+            return
         last = self._last_signal_time.get(market.condition_id, 0.0)
         if time.monotonic() - last < config.MARKET_SIGNAL_COOLDOWN_SECONDS:
             log.debug(f"[pipeline] Market cooldown active: {market.question[:50]}")
@@ -180,7 +210,6 @@ class Pipeline:
             classification = fast_classifier.build_classification(fast_result)
             ob = await self.watcher.fetch_order_book(market)
         else:
-            # fetch order book while the LLM is classifying — saves ~200ms per market
             classification, ob = await asyncio.gather(
                 classify_async(headline=event.headline, market=market, source=event.source),
                 self.watcher.fetch_order_book(market),
@@ -201,7 +230,6 @@ class Pipeline:
         snap = self.watcher.get_snapshot(market.condition_id)
 
         if snap and snap.is_moving:
-            # don't chase — price already ran, slippage will eat the edge
             log.info(f"[pipeline] Market already moving, skipping: {market.question[:50]}")
             return
 
@@ -246,7 +274,6 @@ class Pipeline:
 
         news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
         if news_alpha_sig is None:
-            # edge didn't clear NewsAlpha threshold, but still broadcast so the UI feed stays live
             broadcaster.broadcast({
                 "type":       "signal",
                 "side":       signal.side,
@@ -273,23 +300,32 @@ class Pipeline:
         aggregated = combine(all_alpha_sigs)
         result = await PortfolioManager.instance().process_signal_async(aggregated)
 
-        # Position slot was reserved atomically by risk_engine.validate() via
-        # try_open_position(). Do NOT call on_trade_opened() here — that would
-        # double-count the position and hit the limit after half the allowed trades.
         if result.success and result.filled_size > 0:
             self.metrics.record_trade(pnl=0.0, ev=signal.ev, latency_ms=result.latency_ms)
 
         if config.HOT_PATH_ENABLED:
-            is_loss = result.filled_size == 0 or result.status in ("error", "rejected", "skipped")
-            fast_conf = classification.confidence if config.HOT_PATH_ENABLED else 0.0
+            is_loss = result.status in ("error_order_failed", "rejected", "error_no_clob_client",
+                                         "error_no_token", "error_client_init", "error_no_auth")
             self._cold_path.submit(ColdPathJob(
                 headline=event.headline,
                 source=event.source,
                 market_id=market.condition_id,
                 market_question=market.question,
                 yes_price=market.yes_price,
-                fast_confidence=fast_conf,
+                fast_confidence=classification.confidence,
                 is_loss_trade=is_loss,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ))
+
+        elif not config.HOT_PATH_ENABLED and classification.is_actionable:
+            self._cold_path.submit(ColdPathJob(
+                headline=event.headline,
+                source=event.source,
+                market_id=market.condition_id,
+                market_question=market.question,
+                yes_price=market.yes_price,
+                fast_confidence=classification.confidence,
+                is_loss_trade=result.filled_size == 0,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             ))
 
@@ -328,6 +364,11 @@ class Pipeline:
             "metrics":           self.metrics.snapshot().__dict__,
         }
 
+    def get_source_stats(self) -> dict:
+        if self._news_aggregator is None:
+            return {"error": "news aggregator not started yet"}
+        return dict(self._news_aggregator.stats)
+
 
 def run_pipeline_v2(dry_run: bool | None = None):
     import signal as _signal
@@ -335,8 +376,8 @@ def run_pipeline_v2(dry_run: bool | None = None):
     pipeline = Pipeline(dry_run=dry_run)
 
     def _handle_sigterm(signum, frame):
-        log.info("[pipeline] SIGTERM received — shutting down")
-        raise KeyboardInterrupt
+        log.info("[pipeline] SIGTERM received — initiating shutdown")
+        pipeline.signal_shutdown()
 
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
@@ -344,3 +385,4 @@ def run_pipeline_v2(dry_run: bool | None = None):
         asyncio.run(pipeline.run())
     except KeyboardInterrupt:
         log.info("[pipeline] Stopped by user")
+        pipeline.signal_shutdown()

@@ -281,11 +281,11 @@ async def run_backtest_async(
             tokens=[],
         )
 
-        headline = f"Breaking: major development expected regarding {question[:80]}"
+        headline = f"News development regarding {question[:80]}"
 
         console.print(f"  [{i+1}/{len(resolved)}] {question[:55]}...", end="\r")
 
-        _latency_secs, latency_ms = _simulate_latency()
+        latency_secs, latency_ms = _simulate_latency()
 
         try:
             cls = await classify_async(headline, market, source="backtest")
@@ -294,7 +294,9 @@ async def run_backtest_async(
             skipped += 1
             continue
 
-        signal = compute_edge(market, cls)
+        sim_spread = true_mid * (SIM_SPREAD_BPS / 10000)
+        signal = compute_edge(market, cls, spread=max(0.001, sim_spread))
+        await asyncio.sleep(latency_secs)
         if signal is None:
             skipped += 1
             continue
@@ -336,9 +338,6 @@ async def run_backtest_async(
             category=str(m_data.get("category", "unknown")),
         )
         trades.append(trade)
-
-        # Small delay to avoid hammering the API in the classify loop
-        await asyncio.sleep(0.2)
 
     console.print()  # clear progress line
 

@@ -3,46 +3,91 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+
+import config
+from control.trading_mode import TradingMode
+
 log = logging.getLogger(__name__)
 
 
-
-_pipeline = None
-
-
-def _get_pipeline():
-    global _pipeline
-    if _pipeline is None:
-        from pipeline import Pipeline
-        _pipeline = Pipeline()
-    return _pipeline
+def _require_auth(request: Request):
+    if not config.API_AUTH_ENABLED:
+        return
+    api_key = request.headers.get("X-API-Key", "")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
+    if api_key != config.API_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key.")
 
 
+def _get_pipeline(request: Request):
+    p = getattr(request.app.state, "pipeline", None)
+    if p is None:
+        raise HTTPException(status_code=503, detail="Pipeline not started yet.")
+    return p
+
+
+# ---- rate limiter for /prediction ----
+
+class _TokenBucket:
+    def __init__(self, rate: float, burst: int):
+        self.rate = rate
+        self.burst = burst
+        self.tokens = float(burst)
+        self.last_refill = time.monotonic()
+
+    def consume(self) -> bool:
+        now = time.monotonic()
+        elapsed = now - self.last_refill
+        self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+        self.last_refill = now
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True
+        return False
+
+
+_prediction_bucket = _TokenBucket(rate=10.0 / 60.0, burst=10)
+
+
+# ---- lifespan ----
 
 @asynccontextmanager
-async def lifespan(app):
-    pipeline = _get_pipeline()
-    asyncio.create_task(pipeline.run(), name="pipeline-main")
+async def lifespan(app: FastAPI):
+    from pipeline import Pipeline
+
+    worker_count = int(os.getenv("API_WORKERS", "1"))
+    if worker_count > 1:
+        log.warning(
+            "[api] Running %d uvicorn workers — each creates its own Pipeline, "
+            "MarketWatcher, and trading logic. All workers share one Polymarket account. "
+            "Set API_WORKERS=1 unless you have separate exchange accounts per worker.",
+            worker_count,
+        )
+
+    app.state.pipeline = Pipeline()
+    app.state.pipeline_task = asyncio.create_task(app.state.pipeline.run(), name="pipeline-main")
     log.info("[api] Pipeline started as background task")
     yield
     log.info("[api] Shutting down")
+    app.state.pipeline_task.cancel()
+    try:
+        await app.state.pipeline_task
+    except asyncio.CancelledError:
+        pass
 
 
-
-try:
-    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
-    from fastapi.responses import JSONResponse
-    from pydantic import BaseModel
-    import uvicorn
-except ImportError:
-    raise ImportError(
-        "FastAPI and uvicorn are required. Install: pip install fastapi uvicorn"
-    )
+# ---- app ----
 
 app = FastAPI(
     title="Polymarket Signal API",
@@ -51,8 +96,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-from fastapi.middleware.cors import CORSMiddleware
-from control.trading_mode import TradingMode
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -61,34 +104,41 @@ app.add_middleware(
 )
 
 
+# ---- endpoints ----
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-
 @app.get("/status")
-async def status():
-    pipeline = _get_pipeline()
-    return pipeline.status()
-
+async def status(request: Request, pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
+    result = pipeline.status()
+    task = getattr(request.app.state, "pipeline_task", None)
+    if task is not None and task.done():
+        exc = task.exception()
+        result["pipeline_error"] = str(exc) if exc else "task completed unexpectedly"
+    return result
 
 
 @app.get("/signals/recent")
-async def signals_recent(limit: int = Query(default=20, ge=1, le=200)):
+async def signals_recent(
+    limit: int = Query(default=20, ge=1, le=200),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
     from observability.logger import get_recent_trades
     trades = get_recent_trades(limit=limit)
     return {"count": len(trades), "signals": trades}
 
 
-
 @app.get("/markets")
 async def markets(
-    category: Optional[str] = Query(default=None, description="Filter by category"),
-    source: Optional[str] = Query(default=None, description="Filter by platform: polymarket|kalshi"),
+    category: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
 ):
-    pipeline = _get_pipeline()
     mkt_list = [
         {
             "condition_id": m.condition_id,
@@ -117,10 +167,11 @@ async def markets(
     }
 
 
-
 @app.get("/stats")
 async def stats(
-    category: Optional[str] = Query(default=None, description="Filter stats by category"),
+    category: Optional[str] = Query(default=None),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
 ):
     from observability.logger import get_trade_stats, get_calibration_stats, get_latency_stats, get_category_stats
     result = {
@@ -136,25 +187,19 @@ async def stats(
     return result
 
 
-
 @app.get("/portfolio")
-async def portfolio_state():
+async def portfolio_state(pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
     from portfolio import get_portfolio
     return get_portfolio().get_portfolio_state()
 
 
-
 @app.get("/categories")
-async def categories_info():
-    import config
+async def categories_info(pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
     from ingestion.categories import CATEGORIES
-    pipeline = _get_pipeline()
     markets = pipeline.watcher.tracked_markets
-
     counts: dict[str, int] = {}
     for cat in CATEGORIES:
         counts[cat] = sum(1 for m in markets if getattr(m, "category", "") == cat)
-
     return {
         "available": list(CATEGORIES.keys()),
         "selected": config.SELECTED_CATEGORIES,
@@ -162,56 +207,54 @@ async def categories_info():
     }
 
 
-
 @app.get("/sources")
-async def sources():
-    pipeline = _get_pipeline()
+async def sources(pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
+    stats = pipeline.get_source_stats()
     agg = pipeline._news_aggregator
-    if agg is None:
-        return {"error": "pipeline not yet started"}
-    stats = dict(agg.stats)
+    rss_enabled = True
+    newsapi_enabled = bool(agg.newsapi.enabled) if agg else False
+    gnews_enabled = bool(agg.gnews.enabled) if agg else False
+    twitter_enabled = bool(agg.twitter.enabled) if agg else False
+    telegram_enabled = bool(agg.telegram.enabled) if agg else False
     return {
         "sources": {
-            "rss":     {"enabled": True,  "interval_s": 60},
-            "newsapi": {"enabled": bool(agg.newsapi.enabled), "interval_s": 30},
+            "rss":     {"enabled": rss_enabled,  "interval_s": 60},
+            "newsapi": {"enabled": newsapi_enabled, "interval_s": 30},
             "reddit":  {"enabled": True,  "interval_s": 45},
-            "gnews":   {"enabled": bool(agg.gnews.enabled), "interval_s": 900},
+            "gnews":   {"enabled": gnews_enabled, "interval_s": 900},
             "gdelt":   {"enabled": True,  "interval_s": 300},
-            "twitter": {"enabled": bool(agg.twitter.enabled), "note": "requires Basic tier"},
-            "telegram":{"enabled": bool(agg.telegram.enabled)},
+            "twitter": {"enabled": twitter_enabled, "note": "requires Basic tier"},
+            "telegram":{"enabled": telegram_enabled},
         },
         "event_counts": stats,
     }
 
 
-
 @app.get("/subreddit-stats")
-async def subreddit_stats():
+async def subreddit_stats(pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
     from ingestion.reddit_source import get_subreddit_stats
     rows = get_subreddit_stats()
     return {"subreddits": rows}
 
 
-
 @app.get("/prediction")
-async def prediction(event: str = Query(..., description="Free-text news headline to analyze")):
-    """
-    Classify a custom headline against all tracked markets and return signal candidates.
-    Useful for manual testing or external callers.
-    """
+async def prediction(
+    request: Request,
+    event: str = Query(..., description="Free-text news headline to analyze"),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    if not _prediction_bucket.consume():
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 10 req/min.")
+    markets = pipeline.watcher.tracked_markets
+    if not markets:
+        raise HTTPException(status_code=503, detail="No markets loaded yet.")
+
     from signal.matcher import match_news_to_markets
     from signal.classifier import classify_async
     from signal.nlp_processor import process as nlp_process
 
-    pipeline = _get_pipeline()
-    markets = pipeline.watcher.tracked_markets
-    if not markets:
-        return JSONResponse(status_code=503, content={"error": "no markets loaded yet"})
-
-    # NLP enrichment
     nlp = nlp_process(headline=event, source="api", age_seconds=0, novelty_score=0.5)
-
-    # Semantic match
     matches = match_news_to_markets(event, markets, top_k=5)
     if not matches:
         return {
@@ -225,14 +268,8 @@ async def prediction(event: str = Query(..., description="Free-text news headlin
             "matches": [],
         }
 
-    # Classify top match
     top = matches[0]
-    classification = await classify_async(
-        headline=event,
-        market=top.market,
-        source="api",
-        n_passes=1,   # single pass for latency
-    )
+    classification = await classify_async(headline=event, market=top.market, source="api", n_passes=1)
 
     results = []
     for m in matches:
@@ -264,14 +301,8 @@ async def prediction(event: str = Query(..., description="Free-text news headlin
     }
 
 
-
 @app.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket):
-    """
-    Streams live signals as JSON objects.
-    Each message: {"type": "signal", "side": "YES"|"NO", "market": "...", ...}
-    Sends a heartbeat {"type": "ping"} every 30s to keep connection alive.
-    """
     from observability import broadcaster
 
     await websocket.accept()
@@ -289,8 +320,8 @@ async def ws_signals(websocket: WebSocket):
                 continue
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        log.debug(f"[api] WebSocket error: {e}")
+    except Exception:
+        log.debug("[api] WebSocket error", exc_info=True)
     finally:
         broadcaster.unsubscribe(q)
         if ping_task is not None:
@@ -307,23 +338,17 @@ async def _ws_ping(websocket: WebSocket):
             break
 
 
-
 class TradingModeRequest(BaseModel):
-    mode: str       # "LIVE" | "DRY_RUN"
+    mode: str
     confirm: bool = False
 
 
 @app.post("/trading/mode")
-async def set_trading_mode(request: TradingModeRequest):
-    """
-    Switch between paper trading (DRY_RUN) and live trading (LIVE).
-
-    To enable live trading:
-        POST /trading/mode {"mode": "LIVE", "confirm": true}
-
-    Safety checks are enforced — will reject if drawdown > 20% or in cooldown.
-    Switching back to DRY_RUN never requires confirmation.
-    """
+async def set_trading_mode(
+    request: TradingModeRequest,
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
     result = TradingMode.instance().set_mode(request.mode, confirm=request.confirm)
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -331,30 +356,21 @@ async def set_trading_mode(request: TradingModeRequest):
 
 
 @app.get("/trading/status")
-async def get_trading_status():
-    """
-    Return current trading mode and recent switch history.
-    """
+async def get_trading_status(_auth=Depends(_require_auth)):
     tm = TradingMode.instance()
     return {
         "mode":    tm.mode,
         "is_live": tm.is_live,
-        "history": tm.get_history()[-10:],   # last 10 switches
+        "history": tm.get_history()[-10:],
     }
 
 
-
 if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Silence noisy libraries
     for noisy in ("httpx", "httpcore", "sentence_transformers", "transformers"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -363,5 +379,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=int(os.getenv("API_PORT", "8000")),
         reload=False,
-        log_level="warning",  # uvicorn access log → warning; our handlers are INFO
+        log_level="warning",
     )

@@ -53,10 +53,6 @@ class ColdPathWorker:
                 log.warning(f"[cold_path] Job error: {e}")
 
     async def _process(self, job: ColdPathJob) -> None:
-        is_borderline = 0.40 <= job.fast_confidence <= 0.70
-        if not is_borderline and not job.is_loss_trade:
-            return
-
         from signal.classifier import classify_async
         from ingestion.markets import Market
 

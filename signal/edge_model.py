@@ -144,19 +144,3 @@ def _size_position(ev: float, confidence: float) -> float:
     return round(min(config.MAX_BET_USD, max(1.0, raw_size)), 2)
 
 
-def detect_edge_v2(market: Market, classification, news_event=None) -> Signal | None:
-    """Backward-compat shim used by dashboard.py. Delegates to compute_edge."""
-    from signal.classifier import Classification
-    if not isinstance(classification, Classification):
-        cls = Classification(
-            direction=str(getattr(classification, "direction", "NEUTRAL")),
-            confidence=float(classification) if isinstance(classification, (int, float)) else 0.65,
-            materiality=float(getattr(classification, "materiality", 0.5)),
-            novelty_score=0.6,
-            time_sensitivity="short-term",
-            reasoning=str(getattr(classification, "reasoning", "")),
-            consistency=1.0,
-        )
-        return compute_edge(market, cls)
-    return compute_edge(market, classification)
-

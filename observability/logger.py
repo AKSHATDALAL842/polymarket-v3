@@ -284,11 +284,17 @@ def get_daily_pnl(mode: str | None = None) -> float:
     return (row["resolved_pnl"] or 0.0) + (row["open_exposure"] or 0.0)
 
 
-def get_recent_trades(limit: int = 20) -> list[dict]:
+def get_recent_trades(limit: int = 20, since: str | None = None) -> list[dict]:
     conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
+    if since:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
+            (since, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -318,12 +324,21 @@ def get_recent_news_events(limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_trade_stats() -> dict:
+def get_trade_stats(since: str | None = None) -> dict:
     conn = _conn()
-    total = conn.execute("SELECT COUNT(*) as c FROM trades").fetchone()["c"]
-    by_status = conn.execute(
-        "SELECT status, COUNT(*) as c FROM trades GROUP BY status"
-    ).fetchall()
+    if since:
+        total = conn.execute(
+            "SELECT COUNT(*) as c FROM trades WHERE created_at >= ?", (since,)
+        ).fetchone()["c"]
+        by_status = conn.execute(
+            "SELECT status, COUNT(*) as c FROM trades WHERE created_at >= ? GROUP BY status",
+            (since,),
+        ).fetchall()
+    else:
+        total = conn.execute("SELECT COUNT(*) as c FROM trades").fetchone()["c"]
+        by_status = conn.execute(
+            "SELECT status, COUNT(*) as c FROM trades GROUP BY status"
+        ).fetchall()
     conn.close()
     return {
         "total_trades": total,
@@ -370,19 +385,32 @@ def get_calibration_stats() -> dict:
     }
 
 
-def get_latency_stats() -> dict:
+def get_latency_stats(since: str | None = None) -> dict:
     conn = _conn()
-    row = conn.execute("""
-        SELECT
-            AVG(total_latency_ms) as avg_total,
-            MIN(total_latency_ms) as min_total,
-            MAX(total_latency_ms) as max_total,
-            AVG(news_latency_ms) as avg_news,
-            AVG(classification_latency_ms) as avg_class,
-            COUNT(*) as count
-        FROM trades
-        WHERE total_latency_ms IS NOT NULL
-    """).fetchone()
+    if since:
+        row = conn.execute("""
+            SELECT
+                AVG(total_latency_ms) as avg_total,
+                MIN(total_latency_ms) as min_total,
+                MAX(total_latency_ms) as max_total,
+                AVG(news_latency_ms) as avg_news,
+                AVG(classification_latency_ms) as avg_class,
+                COUNT(*) as count
+            FROM trades
+            WHERE total_latency_ms IS NOT NULL AND created_at >= ?
+        """, (since,)).fetchone()
+    else:
+        row = conn.execute("""
+            SELECT
+                AVG(total_latency_ms) as avg_total,
+                MIN(total_latency_ms) as min_total,
+                MAX(total_latency_ms) as max_total,
+                AVG(news_latency_ms) as avg_news,
+                AVG(classification_latency_ms) as avg_class,
+                COUNT(*) as count
+            FROM trades
+            WHERE total_latency_ms IS NOT NULL
+        """).fetchone()
     conn.close()
     if not row or row["count"] == 0:
         return {"avg_total_ms": 0, "min_total_ms": 0, "max_total_ms": 0,

@@ -1,22 +1,4 @@
-#!/usr/bin/env python3
-"""
-Polymarket Pipeline — CLI Interface
-
-Usage:
-    python cli.py watch                # V2: Event-driven pipeline (real-time news → classify → trade)
-    python cli.py watch --live         # V2: With live trading
-    python cli.py run                  # V1: Synchronous pipeline (RSS → score → trade)
-    python cli.py run --live           # V1: With live trading
-    python cli.py dashboard            # Launch live terminal dashboard
-    python cli.py backtest             # Backtest V2 strategy against resolved markets
-    python cli.py calibrate            # Show classification accuracy report
-    python cli.py niche                # Browse niche markets (< $500K volume)
-    python cli.py verify               # Check all API keys and connections
-    python cli.py scrape               # Test news scraper only
-    python cli.py markets              # Browse all active markets
-    python cli.py trades               # View trade log
-    python cli.py stats                # Performance statistics
-"""
+from __future__ import annotations
 
 import argparse
 import logging
@@ -29,35 +11,30 @@ from rich.table import Table
 
 console = Console()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
 
-_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-os.makedirs(_log_dir, exist_ok=True)
-_file_handler = logging.handlers.RotatingFileHandler(
-    os.path.join(_log_dir, "pipeline.log"),
-    maxBytes=10 * 1024 * 1024,
-    backupCount=5,
-)
-_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s  %(message)s"))
-logging.getLogger().addHandler(_file_handler)
+def _setup_logging(level: int = logging.INFO):
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _file_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(_log_dir, "pipeline.log"),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+    )
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s  %(message)s"))
+    logging.getLogger().addHandler(_file_handler)
 
-for _noisy in ["httpx", "httpcore", "openai._base_client", "urllib3",
-               "sentence_transformers", "transformers", "huggingface_hub"]:
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-
-from dotenv import load_dotenv
-load_dotenv()
-if os.getenv("HF_TOKEN"):
-    os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
+    for _noisy in ["httpx", "httpcore", "openai._base_client", "urllib3",
+                   "sentence_transformers", "transformers", "huggingface_hub"]:
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 def cmd_watch(args):
-    """V2: Event-driven pipeline — real-time news → classify → trade."""
     import config
     from pipeline import run_pipeline_v2
 
@@ -73,30 +50,29 @@ def cmd_watch(args):
     else:
         console.print("[yellow]Dry-run mode (use --live to trade for real)[/yellow]\n")
 
-    if args.threshold:
+    if args.threshold is not None:
         config.MATERIALITY_THRESHOLD = args.threshold
 
     if args.categories:
         config.SELECTED_CATEGORIES = [c.strip() for c in args.categories.split(",") if c.strip()]
         console.print(f"[cyan]Categories: {config.SELECTED_CATEGORIES}[/cyan]\n")
 
+    _show_config_warnings()
     run_pipeline_v2()
 
 
 def cmd_run(args):
-    """V1: Synchronous pipeline — alias for the V2 event-driven pipeline."""
-    console.print("[yellow]Note: V1 synchronous pipeline removed. Launching V2 event-driven pipeline.[/yellow]\n")
-    cmd_watch(args)
+    console.print("[red bold]V1 synchronous pipeline has been removed.[/red bold]")
+    console.print("[yellow]Use: python cli.py watch[/yellow]")
+    sys.exit(1)
 
 
 def cmd_backtest(args):
-    """Run backtest against resolved markets."""
     from observability.backtest import run_backtest
     run_backtest(limit=args.limit, category=args.category)
 
 
 def cmd_calibrate(args):
-    """Show classification accuracy report."""
     from observability.calibrator import check_resolutions, get_report
     from rich.panel import Panel
 
@@ -130,7 +106,6 @@ def cmd_calibrate(args):
 
 
 def cmd_niche(args):
-    """Browse niche markets only (volume-filtered)."""
     import config
     from ingestion.markets import fetch_active_markets, filter_by_categories
 
@@ -167,17 +142,27 @@ def cmd_dashboard(args):
     run_dashboard(scan_interval=args.speed)
 
 
+def _show_config_warnings():
+    import config
+    warnings = config.validate_config()
+    for w in warnings:
+        console.print(f"  [yellow]⚠[/yellow] {w}")
+
+
 def cmd_verify(args):
-    """Check all API keys and connections work."""
     from rich.panel import Panel
 
-    console.print(Panel("[bold]POLYMARKET PIPELINE V2 — VERIFICATION[/bold]", style="bright_green"))
+    console.print(Panel("[bold]POLYMARKET PIPELINE V3 — VERIFICATION[/bold]", style="bright_green"))
+
+    import config
+    _show_config_warnings()
+
     all_good = True
 
     v = sys.version_info
     py_ok = v.major == 3 and v.minor >= 9
     status = "[bright_green]PASS[/bright_green]" if py_ok else "[red]FAIL[/red]"
-    console.print(f"  {status}  Python {v.major}.{v.minor}.{v.micro}")
+    console.print(f"\n  {status}  Python {v.major}.{v.minor}.{v.micro}")
     if not py_ok:
         all_good = False
 
@@ -192,23 +177,20 @@ def cmd_verify(args):
     if deps_ok:
         console.print(f"  [bright_green]PASS[/bright_green]  All dependencies installed")
 
-    import os
     env_exists = os.path.exists(os.path.join(os.path.dirname(__file__), ".env"))
     status = "[bright_green]PASS[/bright_green]" if env_exists else "[red]FAIL[/red] — run: cp .env.example .env"
     console.print(f"  {status}  .env file")
     if not env_exists:
         all_good = False
 
-    import config
-    has_key = bool(config.ANTHROPIC_API_KEY) and config.ANTHROPIC_API_KEY != "sk-ant-..."
     if config.USE_GROQ:
         console.print(f"  [dim]SKIP[/dim]  Anthropic API key (Groq is active backend)")
-    elif has_key:
+    elif config.IS_ANTHROPIC_CONFIGURED:
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
             client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=config.CLASSIFICATION_MODEL,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Say OK"}],
             )
@@ -218,7 +200,6 @@ def cmd_verify(args):
             all_good = False
     else:
         console.print(f"  [red]FAIL[/red]  Anthropic API key not set")
-        all_good = False
 
     try:
         from ingestion.scraper import scrape_rss
@@ -227,8 +208,7 @@ def cmd_verify(args):
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  RSS scraper — {e}")
 
-    has_groq = bool(config.GROQ_API_KEY)
-    if has_groq:
+    if config.IS_GROQ_CONFIGURED:
         try:
             from openai import OpenAI as _OAI
             _groq = _OAI(api_key=config.GROQ_API_KEY, base_url=config.GROQ_BASE_URL)
@@ -244,14 +224,12 @@ def cmd_verify(args):
     else:
         console.print(f"  [dim]SKIP[/dim]  Groq API (optional — set GROQ_API_KEY to use)")
 
-    has_twitter = bool(config.TWITTER_BEARER_TOKEN)
-    if has_twitter:
+    if config.TWITTER_BEARER_TOKEN:
         console.print(f"  [bright_green]PASS[/bright_green]  Twitter bearer token set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Twitter API (optional — enables real-time news stream)")
 
-    has_telegram = bool(config.TELEGRAM_BOT_TOKEN)
-    if has_telegram:
+    if config.TELEGRAM_BOT_TOKEN:
         console.print(f"  [bright_green]PASS[/bright_green]  Telegram bot token set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Telegram bot (optional — enables channel monitoring)")
@@ -272,15 +250,14 @@ def cmd_verify(args):
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  Niche filter — {e}")
 
-    has_poly = bool(config.POLYMARKET_API_KEY)
-    if has_poly:
+    if config.POLYMARKET_API_KEY:
         console.print(f"  [bright_green]PASS[/bright_green]  Polymarket trading credentials set")
     else:
         console.print(f"  [dim]SKIP[/dim]  Polymarket trading credentials (optional — needed for --live)")
 
     try:
         from observability import logger as _
-        console.print(f"  [bright_green]PASS[/bright_green]  SQLite database (V2 schema)")
+        console.print(f"  [bright_green]PASS[/bright_green]  SQLite database (V3 schema)")
     except Exception as e:
         console.print(f"  [red]FAIL[/red]  SQLite — {e}")
         all_good = False
@@ -289,12 +266,10 @@ def cmd_verify(args):
     if all_good:
         console.print(Panel(
             "[bright_green bold]ALL CHECKS PASSED[/bright_green bold]\n\n"
-            "You're ready to go. Run:\n"
-            "  python cli.py watch             # V2: Event-driven pipeline\n"
-            "  python cli.py run               # V1: Synchronous pipeline\n"
-            "  python cli.py dashboard          # Live terminal dashboard\n"
-            "  python cli.py backtest           # Validate strategy\n"
-            "  python cli.py watch --live       # Real trading (careful!)",
+            "Run:  python cli.py watch             Event-driven pipeline\n"
+            "      python cli.py dashboard          Live terminal dashboard\n"
+            "      python cli.py backtest           Validate strategy\n"
+            "      python cli.py watch --live       Real trading (careful!)",
             style="bright_green",
         ))
     else:
@@ -346,7 +321,7 @@ def cmd_markets(args):
 def cmd_trades(args):
     from observability import logger
 
-    trades = logger.get_recent_trades(limit=args.limit)
+    trades = logger.get_recent_trades(limit=args.limit, since=args.since)
     if not trades:
         console.print("[yellow]No trades logged yet.[/yellow]")
         return
@@ -389,9 +364,9 @@ def cmd_trades(args):
 def cmd_stats(args):
     from observability import logger
 
-    stats = logger.get_trade_stats()
+    stats = logger.get_trade_stats(since=args.since)
     daily = logger.get_daily_pnl()
-    latency = logger.get_latency_stats()
+    latency = logger.get_latency_stats(since=args.since)
     cal = logger.get_calibration_stats()
 
     console.print(f"\n[bold]Pipeline Statistics[/bold]\n")
@@ -413,10 +388,12 @@ def cmd_stats(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Polymarket Pipeline V2")
+    parser = argparse.ArgumentParser(description="Polymarket Pipeline V3")
+    parser.add_argument("--verbose", action="store_true", help="Enable DEBUG log output")
+    parser.add_argument("--quiet", action="store_true", help="Suppress log output (errors only)")
     sub = parser.add_subparsers(dest="command")
 
-    p_watch = sub.add_parser("watch", help="V2: Event-driven pipeline (real-time)")
+    p_watch = sub.add_parser("watch", help="Event-driven pipeline (real-time news → classify → trade)")
     p_watch.add_argument("--live", action="store_true", help="Enable live trading")
     p_watch.add_argument("--threshold", type=float, default=None, help="Materiality threshold override")
     p_watch.add_argument(
@@ -427,18 +404,14 @@ def main():
     )
     p_watch.set_defaults(func=cmd_watch)
 
-    p_run = sub.add_parser("run", help="V1: Synchronous pipeline (RSS-based)")
-    p_run.add_argument("--live", action="store_true", help="Enable live trading")
-    p_run.add_argument("--max", type=int, default=10, help="Max markets to scan")
-    p_run.add_argument("--hours", type=int, default=6, help="News lookback hours")
-    p_run.add_argument("--threshold", type=float, default=None, help="Edge threshold override")
+    p_run = sub.add_parser("run", help="[DEPRECATED] Use 'watch' instead")
     p_run.set_defaults(func=cmd_run)
 
     p_dash = sub.add_parser("dashboard", help="Launch live terminal dashboard")
     p_dash.add_argument("--speed", type=float, default=60.0, help="Seconds between scan cycles")
     p_dash.set_defaults(func=cmd_dashboard)
 
-    p_bt = sub.add_parser("backtest", help="Backtest V2 strategy")
+    p_bt = sub.add_parser("backtest", help="Backtest strategy against resolved markets")
     p_bt.add_argument("--limit", type=int, default=30, help="Number of resolved markets")
     p_bt.add_argument("--category", type=str, default=None, help="Filter by category")
     p_bt.set_defaults(func=cmd_backtest)
@@ -462,15 +435,24 @@ def main():
 
     p_trades = sub.add_parser("trades", help="View trade log")
     p_trades.add_argument("--limit", type=int, default=20, help="Number of trades to show")
+    p_trades.add_argument("--since", type=str, default=None, help="ISO date filter (e.g. 2026-05-01 or 2026-05-01T12:00)")
     p_trades.set_defaults(func=cmd_trades)
 
     p_stats = sub.add_parser("stats", help="Performance statistics")
+    p_stats.add_argument("--since", type=str, default=None, help="ISO date filter (e.g. 2026-05-01)")
     p_stats.set_defaults(func=cmd_stats)
 
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    if args.verbose:
+        _setup_logging(logging.DEBUG)
+    elif args.quiet:
+        _setup_logging(logging.ERROR)
+    else:
+        _setup_logging(logging.INFO)
 
     args.func(args)
 
