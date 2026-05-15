@@ -154,7 +154,11 @@ class Pipeline:
         if not markets:
             return
 
-        matches = match_news_to_markets(headline, markets)
+        try:
+            matches = match_news_to_markets(headline, markets)
+        except Exception as e:
+            log.warning(f"[pipeline] Matcher failed for '{headline[:60]}': {e}")
+            return
         if not matches:
             log.debug(f"[pipeline] No market matches for: {headline[:60]}")
             return

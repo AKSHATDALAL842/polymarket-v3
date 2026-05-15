@@ -10,6 +10,13 @@ log = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Must be set BEFORE any library imports tqdm (sentence-transformers,
+# transformers, huggingface_hub).  tqdm progress bars crash with
+# BrokenPipeError when running inside asyncio task contexts.
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -113,7 +120,7 @@ NOVELTY_SIMILARITY_THRESHOLD = 0.85
 
 EMBEDDING_BACKEND     = os.getenv("EMBEDDING_BACKEND", "sentence_transformers")
 MATCHER_TOP_K         = 5
-MATCHER_MIN_SIMILARITY = 0.45
+MATCHER_MIN_SIMILARITY = float(os.getenv("MATCHER_MIN_SIMILARITY", "0.30"))
 
 _EDGE_ALPHA             = 0.40
 _EDGE_BETA              = 0.30
@@ -184,6 +191,10 @@ FAST_CLASSIFIER_MIN_CONFIDENCE = float(os.getenv("FAST_CLASSIFIER_MIN_CONFIDENCE
 STALENESS_THRESHOLD           = float(os.getenv("STALENESS_THRESHOLD", "0.50"))
 HOT_PATH_CONSISTENCY          = float(os.getenv("HOT_PATH_CONSISTENCY", "0.70"))
 
+# Ensemble strategy weights (overridable at runtime)
+NEWS_WEIGHT      = float(os.getenv("NEWS_WEIGHT", "0.60"))
+MOMENTUM_WEIGHT  = float(os.getenv("MOMENTUM_WEIGHT", "0.40"))
+
 API_SECRET_KEY = os.getenv("API_SECRET_KEY", "")
 API_AUTH_ENABLED = bool(API_SECRET_KEY)
 
@@ -247,6 +258,101 @@ def validate_config() -> list[str]:
         )
 
     return warnings
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Runtime config overrides — allows the dashboard to change settings
+# on a live pipeline without restarting.
+# ═══════════════════════════════════════════════════════════════════
+
+import sys as _sys
+
+_original_values: dict[str, object] = {}
+_override_values: dict[str, object] = {}
+
+_MODULE = _sys.modules[__name__]
+
+# Keys the frontend is allowed to change via the API
+_ALLOWED_OVERRIDE_KEYS = {
+    "SIZING_K",
+    "MAX_CONCURRENT_POSITIONS",
+    "DAILY_LOSS_LIMIT_USD",
+    "MIN_CONFIDENCE",
+    "MATERIALITY_THRESHOLD",
+    "EDGE_THRESHOLD",
+    "MAX_BET_USD",
+    "COOLDOWN_MINUTES",
+    "MAX_SPREAD_FRACTION",
+    "MAX_SLIPPAGE_FRACTION",
+    "MIN_LIQUIDITY_SCORE",
+    "NLP_ENABLED",
+    "NLP_MIN_IMPACT",
+    "HOT_PATH_ENABLED",
+    "FAST_CLASSIFIER_MIN_CONFIDENCE",
+    "NEWS_WEIGHT",
+    "MOMENTUM_WEIGHT",
+}
+
+
+def override(key: str, value: object) -> bool:
+    """Override a config value at runtime.  Only allowed keys are accepted.
+    Returns True on success, False if the key is not allowed."""
+    if key not in _ALLOWED_OVERRIDE_KEYS:
+        log.warning("[config] Refusing to override non-whitelisted key %r", key)
+        return False
+
+    if key not in _original_values:
+        _original_values[key] = getattr(_MODULE, key, None)
+
+    coerced = _coerce(key, value)
+    _override_values[key] = coerced
+    setattr(_MODULE, key, coerced)
+    log.info("[config] Runtime override: %s = %s", key, coerced)
+    return True
+
+
+def restore(key: str | None = None) -> None:
+    """Restore original value(s).  Pass None to restore everything."""
+    if key:
+        if key in _original_values:
+            setattr(_MODULE, key, _original_values[key])
+            _original_values.pop(key, None)
+            _override_values.pop(key, None)
+            log.info("[config] Restored default for %s", key)
+    else:
+        for k, v in list(_original_values.items()):
+            setattr(_MODULE, k, v)
+        _original_values.clear()
+        _override_values.clear()
+        log.info("[config] All runtime overrides restored to defaults")
+
+
+def get_overrides() -> dict[str, object]:
+    """Return a snapshot of current override values."""
+    return dict(_override_values)
+
+
+def get_effective_config() -> dict[str, object]:
+    """Return the effective (currently live) values for all allowed keys."""
+    return {k: getattr(_MODULE, k, None) for k in _ALLOWED_OVERRIDE_KEYS}
+
+
+def _coerce(key: str, value: object) -> object:
+    """Coerce the incoming value to the same type as the current config attribute."""
+    current = getattr(_MODULE, key, None)
+    if current is None:
+        return value
+    if isinstance(current, bool):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes", "on")
+        return bool(value)
+    if isinstance(current, int):
+        return int(float(value))
+    if isinstance(current, float):
+        return float(value)
+    return value
 
 
 _warnings = validate_config()

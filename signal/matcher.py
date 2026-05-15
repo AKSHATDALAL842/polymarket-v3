@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -10,19 +11,33 @@ import numpy as np
 import config
 from ingestion.markets import Market
 
+# Must be set before sentence-transformers or huggingface_hub are imported —
+# tqdm progress bars crash with BrokenPipeError in asyncio subprocess contexts.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TQDM_DISABLE", "1")
+
 log = logging.getLogger(__name__)
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
 _embed_fn: EmbedFn | None = None
+_embed_load_attempted: bool = False  # set True after first attempt, even if it failed
 
 
 def _load_sentence_transformers() -> EmbedFn:
     try:
-        import os
-        hf_token = os.getenv("HF_TOKEN") or None
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2", token=hf_token or None)
+        # Suppress all output during model load — tqdm/transformers progress
+        # bars crash with BrokenPipeError in asyncio contexts.
+        import sys as _sys
+        _real_stderr = _sys.stderr
+        _sys.stderr = open(os.devnull, 'w')
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer("all-MiniLM-L6-v2", token=os.getenv("HF_TOKEN") or None)
+        finally:
+            _sys.stderr.close()
+            _sys.stderr = _real_stderr
+
         log.info("[matcher] Loaded sentence-transformers (all-MiniLM-L6-v2)")
 
         def embed(texts: list[str]) -> np.ndarray:
@@ -32,6 +47,9 @@ def _load_sentence_transformers() -> EmbedFn:
         return embed
     except ImportError:
         raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+    except Exception as e:
+        log.warning(f"[matcher] Failed to load sentence-transformers: {e}")
+        return None
 
 
 def _load_openai_embeddings() -> EmbedFn:
@@ -55,10 +73,13 @@ def _load_openai_embeddings() -> EmbedFn:
 
 
 def get_embed_fn() -> EmbedFn:
-    global _embed_fn
+    global _embed_fn, _embed_load_attempted
     if _embed_fn is not None:
         return _embed_fn
+    if _embed_load_attempted:
+        return None  # already tried and failed — don't retry
 
+    _embed_load_attempted = True
     backend = config.EMBEDDING_BACKEND
     try:
         if backend == "openai" and config.OPENAI_API_KEY:
@@ -67,6 +88,9 @@ def get_embed_fn() -> EmbedFn:
             _embed_fn = _load_sentence_transformers()
     except ImportError:
         log.warning("[matcher] Embedding backend unavailable — using keyword fallback")
+        _embed_fn = None
+    except Exception as e:
+        log.warning(f"[matcher] Embedding backend failed ({type(e).__name__}) — using keyword fallback")
         _embed_fn = None
 
     return _embed_fn
@@ -199,7 +223,13 @@ def _keyword_match(
         hits = sum(1 for kw in keywords if kw in headline_lower)
         if hits == 0:
             continue
-        score = hits / len(keywords)
+        # Score: Jaccard-like — hits / (keywords + unique headline words - hits)
+        # This penalises long questions less harshly than hits/len(keywords).
+        headline_words = set(headline_lower.split())
+        union = len(set(keywords) | headline_words)
+        score = hits / max(1, union) if union > 0 else 0.0
+        # Boost by raw hit count so 2-keyword hits outrank 1-keyword hits
+        score = min(1.0, score + hits * 0.12)
         scored.append((score, market))
 
     scored.sort(key=lambda x: x[0], reverse=True)
