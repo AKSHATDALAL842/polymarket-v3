@@ -19,6 +19,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 IS_ANTHROPIC_CONFIGURED = bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "sk-ant-...")
