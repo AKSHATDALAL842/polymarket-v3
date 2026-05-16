@@ -122,7 +122,7 @@ NOVELTY_SIMILARITY_THRESHOLD = 0.85
 
 EMBEDDING_BACKEND     = os.getenv("EMBEDDING_BACKEND", "sentence_transformers")
 MATCHER_TOP_K         = 5
-MATCHER_MIN_SIMILARITY = float(os.getenv("MATCHER_MIN_SIMILARITY", "0.30"))
+MATCHER_MIN_SIMILARITY = float(os.getenv("MATCHER_MIN_SIMILARITY", "0.20"))
 
 _EDGE_ALPHA             = 0.40
 _EDGE_BETA              = 0.30
