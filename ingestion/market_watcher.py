@@ -134,11 +134,13 @@ class MarketWatcher:
         }
 
     def get_niche_markets(self, markets: list[Market]) -> list[Market]:
-        eligible = [
-            m for m in markets
-            if config.MIN_VOLUME_USD <= m.volume <= config.MAX_VOLUME_USD
-            and m.active
-        ]
+        eligible = []
+        for m in markets:
+            if not m.active:
+                continue
+            min_vol = config.KALSHI_MIN_VOLUME_USD if getattr(m, 'source', '') == 'kalshi' else config.MIN_VOLUME_USD
+            if min_vol <= m.volume <= config.MAX_VOLUME_USD:
+                eligible.append(m)
 
         if not config.PREFER_SHORT_DURATION_DAYS:
             return eligible

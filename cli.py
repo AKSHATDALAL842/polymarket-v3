@@ -494,6 +494,15 @@ def cmd_debug_dashboard(args):
     console.print(f"[dim]       curl localhost:8000/debug/heatmap | python -m json.tool[/dim]")
 
 
+def cmd_attrition(args):
+    from observability.signal_attrition import compute_attrition, print_waterfall, generate_synthetic_traces
+    if args.synthetic:
+        generate_synthetic_traces(args.synthetic)
+        console.print(f"[green]Generated {args.synthetic} synthetic traces[/green]\n")
+    report = compute_attrition(window_hours=args.window)
+    print_waterfall(report)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Pipeline V3")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG log output")
@@ -551,6 +560,11 @@ def main():
 
     p_debug = sub.add_parser("debug-dashboard", help="Telemetry debug dashboard — rejection reasons, bottlenecks, DLQ")
     p_debug.set_defaults(func=cmd_debug_dashboard)
+
+    p_attrition = sub.add_parser("signal-attrition", help="Signal attrition waterfall — stage-by-stage drop-off rates")
+    p_attrition.add_argument("--window", type=int, default=24, help="Hours of trace history (default: 24)")
+    p_attrition.add_argument("--synthetic", type=int, default=None, help="Generate N synthetic traces for testing")
+    p_attrition.set_defaults(func=cmd_attrition)
 
     args = parser.parse_args()
     if not args.command:

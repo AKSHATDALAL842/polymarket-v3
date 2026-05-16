@@ -93,8 +93,9 @@ def _load_rss_feeds() -> list[str]:
 
 RSS_FEEDS = _load_rss_feeds()
 
-MAX_VOLUME_USD             = float(os.getenv("MAX_VOLUME_USD", "500000"))
+MAX_VOLUME_USD             = float(os.getenv("MAX_VOLUME_USD", "5000000"))
 MIN_VOLUME_USD             = float(os.getenv("MIN_VOLUME_USD", "1000"))
+KALSHI_MIN_VOLUME_USD      = float(os.getenv("KALSHI_MIN_VOLUME_USD", "0"))
 PREFER_SHORT_DURATION_DAYS = int(os.getenv("PREFER_SHORT_DURATION_DAYS", "30"))
 NEWS_LOOKBACK_HOURS = 6
 
