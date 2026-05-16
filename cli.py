@@ -387,6 +387,113 @@ def cmd_stats(args):
         console.print(f"    Accuracy: {cal['accuracy']:.1f}% ({cal['total']} resolved)")
 
 
+def cmd_debug_dashboard(args):
+    """Telemetry debug dashboard — visibility into signal starvation causes."""
+    from observability.logger import (
+        get_recent_traces, get_rejection_analytics, get_dlq_stats,
+    )
+    from observability.stage_timer import get_stage_timer
+    from rich.panel import Panel
+    from rich.layout import Layout
+
+    console.print(Panel("[bold bright_cyan]TELEMETRY DEBUG DASHBOARD[/bold bright_cyan]",
+                        style="bright_cyan"))
+
+    # 1. Top rejection reasons
+    analytics = get_rejection_analytics(window_seconds=86400)
+    console.print(f"\n[bold]REJECTION ANALYTICS[/bold] (24h window, {analytics['total_signals']} signals)")
+
+    if analytics["by_reason"]:
+        table = Table(show_header=True, header_style="bold red")
+        table.add_column("Reason", max_width=40)
+        table.add_column("Severity", width=14)
+        table.add_column("Count", justify="right", width=8)
+        table.add_column("Rate", justify="right", width=8)
+        total = max(1, analytics["total_signals"])
+        for r in analytics["by_reason"][:15]:
+            rate = r["count"] / total * 100
+            sev_color = {
+                "HARD_REJECT": "red", "SOFT_REJECT": "yellow",
+                "INFO": "dim white", "SYSTEM_FAILURE": "bright_red",
+            }.get(r["severity"], "white")
+            table.add_row(r["reason"], f"[{sev_color}]{r['severity']}[/{sev_color}]",
+                          str(r["count"]), f"{rate:.1f}%")
+        console.print(table)
+    else:
+        console.print("  [dim]No rejection data yet — run the pipeline first[/dim]")
+
+    # 2. Stage bottlenecks
+    console.print("\n[bold]STAGE LATENCY BOTTLENECKS[/bold]")
+    timer = get_stage_timer()
+    dists = timer.get_all_distributions()
+    if dists:
+        table = Table(show_header=True, header_style="bold yellow")
+        table.add_column("Stage", max_width=22)
+        table.add_column("p50", justify="right", width=8)
+        table.add_column("p95", justify="right", width=8)
+        table.add_column("p99", justify="right", width=8)
+        table.add_column("Count", justify="right", width=8)
+        for stage, d in sorted(dists.items(), key=lambda x: -x[1].p95_us):
+            p95_ms = d.p95_us / 1000
+            color = "red" if p95_ms > 500 else ("yellow" if p95_ms > 100 else "green")
+            table.add_row(stage,
+                          f"{d.p50_us/1000:.1f}ms",
+                          f"[{color}]{d.p95_us/1000:.1f}ms[/{color}]",
+                          f"{d.p99_us/1000:.1f}ms",
+                          str(d.count))
+        console.print(table)
+    else:
+        console.print("  [dim]No stage timing data yet[/dim]")
+
+    # 3. Market-match failures
+    console.print("\n[bold]MARKET-MATCH FAILURES[/bold]")
+    no_match = get_recent_traces(limit=200, reason="NO_MARKET_MATCHES")
+    recent_all = get_recent_traces(limit=200)
+    match_fail_rate = len(no_match) / max(1, len(recent_all)) * 100
+    console.print(f"  NO_MARKET_MATCHES: {len(no_match)} of {len(recent_all)} "
+                  f"recent traces ([red]{match_fail_rate:.1f}%[/red])")
+    if no_match:
+        console.print(f"  [dim]Sample headlines with no market match:[/dim]")
+        for t in no_match[:5]:
+            console.print(f"    - {t['headline'][:80]}")
+
+    # 4. Queue saturation
+    console.print("\n[bold]QUEUE SATURATION[/bold]")
+    console.print(f"  [dim]Run with --watch to see live queue depths via /debug/queues[/dim]")
+
+    # 5. Zero-signal windows
+    console.print("\n[bold]ZERO-SIGNAL WINDOWS[/bold]")
+    if recent_all:
+        from datetime import datetime, timezone
+        times = [t.get("created_at", "") for t in recent_all]
+        times = [t for t in times if t]
+        if len(times) >= 2:
+            console.print(f"  First signal: {times[-1][:19]}")
+            console.print(f"  Latest signal: {times[0][:19]}")
+            console.print(f"  Total signals: {len(recent_all)}")
+    else:
+        console.print("  [yellow bold]No signals in recent trace history[/yellow bold]")
+        console.print("  [dim]This indicates either:[/dim]")
+        console.print("  [dim]  - Pipeline has not been started[/dim]")
+        console.print("  [dim]  - All signals are being filtered before reaching the ingestor[/dim]")
+        console.print("  [dim]  - The news queue is starved[/dim]")
+
+    # 6. Dead-letter spikes
+    dlq_stats = get_dlq_stats()
+    console.print("\n[bold]DEAD-LETTER QUEUE[/bold]")
+    dlq_total = sum(r["count"] for r in dlq_stats["by_status_subsystem"])
+    if dlq_total > 0:
+        console.print(f"  [red]Total DLQ entries: {dlq_total}[/red]")
+        for r in dlq_stats["by_status_subsystem"]:
+            console.print(f"  {r['subsystem']} ({r['status']}): {r['count']}")
+    else:
+        console.print("  [green]No dead-letter entries[/green]")
+
+    # Summary
+    console.print(f"\n[dim]Run:  python cli.py debug-dashboard --live  for live refresh[/dim]")
+    console.print(f"[dim]       curl localhost:8000/debug/heatmap | python -m json.tool[/dim]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Pipeline V3")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG log output")
@@ -441,6 +548,9 @@ def main():
     p_stats = sub.add_parser("stats", help="Performance statistics")
     p_stats.add_argument("--since", type=str, default=None, help="ISO date filter (e.g. 2026-05-01)")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_debug = sub.add_parser("debug-dashboard", help="Telemetry debug dashboard — rejection reasons, bottlenecks, DLQ")
+    p_debug.set_defaults(func=cmd_debug_dashboard)
 
     args = parser.parse_args()
     if not args.command:
