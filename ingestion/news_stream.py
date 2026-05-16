@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import logging
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 
@@ -13,6 +14,14 @@ import config
 from ingestion.scraper import scrape_all, NewsItem
 
 log = logging.getLogger(__name__)
+
+# Ring buffer of raw headlines for the dashboard news wire
+_headline_buffer: deque = deque(maxlen=200)
+
+
+def get_recent_headlines(limit: int = 50) -> list[dict]:
+    """Return the most recent raw headlines from the ingestion pipeline."""
+    return list(_headline_buffer)[-limit:]
 
 
 @dataclass
@@ -704,6 +713,13 @@ class NewsAggregator:
             self._seen.add(key)
             self.stats[event.source] = self.stats.get(event.source, 0) + 1
             self.stats["total"] += 1
+
+            _headline_buffer.append({
+                "headline": event.headline,
+                "source": event.source,
+                "received_at": event.received_at.isoformat(),
+                "latency_ms": event.latency_ms,
+            })
 
             await self.output_queue.put(event)
 

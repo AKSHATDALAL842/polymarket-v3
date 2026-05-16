@@ -29,7 +29,7 @@ export default function VirtualMoney() {
 
   if (!p) {
     return (
-      <div className="vm-wrap" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-base)' }}>
         <div className="empty-state">Connecting to portfolio API...</div>
       </div>
     )
@@ -42,112 +42,128 @@ export default function VirtualMoney() {
   const cats       = p.by_category ? Object.entries(p.by_category) : []
 
   return (
-    <div className="vm-wrap">
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg-base)' }}>
 
-      {/* ── Hero ── */}
-      <div className="vm-hero">
-        <div className="vm-hero-main">
-          <div className="vm-hero-eyebrow">Virtual Portfolio · Paper Trading</div>
-          <div className="vm-hero-value">{fmt(p.total_value)}</div>
-          <div className="vm-hero-sub">
+      {/* ── Hero Banner ── */}
+      <div style={{
+        display: 'flex', alignItems: 'stretch', borderBottom: '1px solid var(--border)',
+        flexShrink: 0, background: 'var(--bg-surface)'
+      }}>
+        <div style={{ flex: 1, padding: '20px 28px', borderRight: '1px solid var(--border)' }}>
+          <div style={{
+            fontFamily: '"Barlow Condensed"', fontSize: '9px', fontWeight: 700,
+            letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--txt-mute)', marginBottom: '4px'
+          }}>
+            Virtual Portfolio · Paper Trading
+          </div>
+          <div style={{
+            fontSize: '38px', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+            color: 'var(--txt)', lineHeight: 1, letterSpacing: '-0.5px'
+          }}>
+            {fmt(p.total_value)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--txt-sub)', marginTop: '6px' }}>
             Started with {fmt(p.initial_balance)} ·{' '}
-            <span
-              className="vm-hero-return"
-              style={{ color: pnlColor(p.total_return_pct) }}
-            >
+            <span style={{ fontSize: '13px', fontWeight: 600, color: pnlColor(p.total_return_pct) }}>
               {returnSign}{(p.total_return_pct || 0).toFixed(2)}% total return
             </span>
           </div>
         </div>
 
-        <div className="vm-stat-strip">
-          <div className="vm-stat-item">
-            <span className="vm-stat-label">Win Rate</span>
-            <span className="vm-stat-value" style={{ color: p.win_rate >= 0.5 ? 'var(--green)' : p.win_rate > 0 ? 'var(--red)' : 'var(--txt-sub)' }}>
-              {p.win_rate > 0 ? `${(p.win_rate * 100).toFixed(1)}%` : '—'}
-            </span>
-            <div className="vm-stat-bar-wrap">
-              <div className="vm-stat-bar" style={{
-                width: `${(p.win_rate || 0) * 100}%`,
-                background: p.win_rate >= 0.5 ? 'var(--green)' : 'var(--red)'
-              }} />
-            </div>
-          </div>
-
-          <div className="vm-stat-item">
-            <span className="vm-stat-label">Sharpe</span>
-            <span className="vm-stat-value" style={{
-              color: p.sharpe_ratio > 1 ? 'var(--green)' : p.sharpe_ratio > 0 ? 'var(--amber)' : p.sharpe_ratio != null ? 'var(--red)' : 'var(--txt-sub)'
+        {/* Stat strip */}
+        <div style={{ display: 'flex' }}>
+          {[
+            { label: 'Win Rate', value: p.win_rate > 0 ? `${(p.win_rate * 100).toFixed(1)}%` : '—', color: p.win_rate >= 0.5 ? 'var(--green)' : p.win_rate > 0 ? 'var(--red)' : 'var(--txt-sub)' },
+            { label: 'Sharpe', value: p.sharpe_ratio != null ? p.sharpe_ratio.toFixed(2) : '—', color: p.sharpe_ratio > 1 ? 'var(--green)' : p.sharpe_ratio > 0 ? 'var(--amber)' : 'var(--txt-sub)' },
+            { label: 'Max Drawdown', value: p.max_drawdown > 0 ? `-${(p.max_drawdown * 100).toFixed(2)}%` : '0.00%', color: p.max_drawdown > 0.1 ? 'var(--red)' : p.max_drawdown > 0.05 ? 'var(--amber)' : 'var(--green)' },
+            { label: 'Open Positions', value: openList.length, color: openList.length > 0 ? 'var(--amber)' : 'var(--txt-sub)' },
+            { label: 'Cash Balance', value: fmt(p.balance), color: 'var(--txt)' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{
+              padding: '16px 20px', display: 'flex', flexDirection: 'column',
+              justifyContent: 'center', gap: '4px', borderRight: '1px solid var(--border)',
+              minWidth: '110px'
             }}>
-              {p.sharpe_ratio != null ? p.sharpe_ratio.toFixed(2) : '—'}
-            </span>
-          </div>
-
-          <div className="vm-stat-item">
-            <span className="vm-stat-label">Max Drawdown</span>
-            <span className="vm-stat-value" style={{
-              color: p.max_drawdown > 0.1 ? 'var(--red)' : p.max_drawdown > 0.05 ? 'var(--amber)' : 'var(--green)'
-            }}>
-              {p.max_drawdown > 0 ? `-${(p.max_drawdown * 100).toFixed(2)}%` : '0.00%'}
-            </span>
-            <div className="vm-stat-bar-wrap">
-              <div className="vm-stat-bar" style={{
-                width: `${Math.min((p.max_drawdown || 0) * 100 * 5, 100)}%`,
-                background: p.max_drawdown > 0.1 ? 'var(--red)' : 'var(--amber)'
-              }} />
+              <span style={{
+                fontFamily: '"Barlow Condensed"', fontSize: '8.5px', fontWeight: 700,
+                letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--txt-mute)'
+              }}>
+                {label}
+              </span>
+              <span style={{
+                fontSize: '17px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1, color
+              }}>
+                {value}
+              </span>
             </div>
-          </div>
-
-          <div className="vm-stat-item">
-            <span className="vm-stat-label">Open Positions</span>
-            <span className="vm-stat-value" style={{ color: openList.length > 0 ? 'var(--amber)' : 'var(--txt-sub)' }}>
-              {openList.length}
-            </span>
-          </div>
-
-          <div className="vm-stat-item">
-            <span className="vm-stat-label">Cash Balance</span>
-            <span className="vm-stat-value" style={{ color: 'var(--txt)' }}>
-              {fmt(p.balance)}
-            </span>
-          </div>
+          ))}
         </div>
       </div>
 
       {/* ── P&L strip ── */}
-      <div className="vm-pnl-row">
+      <div style={{
+        display: 'flex', alignItems: 'stretch', borderBottom: '1px solid var(--border)',
+        flexShrink: 0, background: 'var(--bg-base)'
+      }}>
         {[
           { label: 'Unrealized P&L', value: p.unrealized_pnl },
           { label: 'Realized P&L',   value: p.realized_pnl },
           { label: 'Total P&L',      value: totalPnl },
           { label: 'Daily P&L',      value: p.daily_pnl ?? null },
         ].map(({ label, value }) => (
-          <div key={label} className={`vm-pnl-card ${pnlClass(value)}`}>
-            <span className="vm-pnl-label">{label}</span>
-            <span className="vm-pnl-value" style={{ color: pnlColor(value) }}>
+          <div key={label} style={{
+            flex: 1, padding: '12px 18px', borderRight: '1px solid var(--border)',
+            display: 'flex', flexDirection: 'column', gap: '3px', position: 'relative'
+          }}>
+            <div style={{
+              position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+              background: value > 0 ? 'var(--green)' : value < 0 ? 'var(--red)' : 'var(--border-hi)'
+            }} />
+            <span style={{
+              fontFamily: '"Barlow Condensed"', fontSize: '8.5px', fontWeight: 700,
+              letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--txt-mute)'
+            }}>
+              {label}
+            </span>
+            <span style={{
+              fontSize: '19px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1, color: pnlColor(value)
+            }}>
               {fmtPnl(value)}
             </span>
           </div>
         ))}
       </div>
 
-      {/* ── Body ── */}
-      <div className="vm-body">
+      {/* ── Body: Tables ── */}
+      <div style={{
+        flex: 1, overflowY: 'auto', padding: '14px 18px',
+        display: 'flex', flexDirection: 'column', gap: '14px'
+      }}>
 
         {/* Open Positions */}
-        <div className="vm-section">
-          <div className="vm-section-header">
-            <span className="vm-section-title">Open Positions</span>
-            <span className="vm-section-badge">{openList.length}</span>
+        <div style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', overflow: 'hidden'
+        }}>
+          <div className="section-hdr">
+            <span className="section-hdr-label">Open Positions</span>
+            <span style={{
+              fontFamily: '"Barlow Condensed"', fontSize: '9.5px', fontWeight: 700,
+              background: 'var(--bg-base)', border: '1px solid var(--border-hi)',
+              color: 'var(--txt)', padding: '1px 8px'
+            }}>
+              {openList.length}
+            </span>
           </div>
           {openList.length === 0 ? (
-            <div className="vm-empty">No open positions — waiting for signals</div>
+            <div className="empty-state" style={{ borderTop: '1px dashed var(--border-dim)' }}>
+              No open positions — waiting for signals
+            </div>
           ) : (
-            <div className="vm-table-wrap">
+            <div className="data-table-wrap" style={{ maxHeight: '300px' }}>
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th style={{ minWidth: 260 }}>Market</th>
+                    <th style={{ minWidth: 240 }}>Market</th>
                     <th>Platform</th>
                     <th>Category</th>
                     <th>Side</th>
@@ -160,7 +176,7 @@ export default function VirtualMoney() {
                 <tbody>
                   {openList.map((pos, i) => (
                     <tr key={i}>
-                      <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
+                      <td style={{ maxWidth: 320, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', fontSize: '10.5px', lineHeight: 1.4 }}>
                         {pos.question || pos.market_question || pos.market_id}
                       </td>
                       <td>
@@ -171,25 +187,23 @@ export default function VirtualMoney() {
                       <td>
                         {pos.category
                           ? <span className={`cat-badge cat-${pos.category}`}>{pos.category}</span>
-                          : <span style={{ color: 'var(--txt-mute)' }}>—</span>}
+                          : <span className="txt-mute">—</span>}
                       </td>
                       <td>
                         <span style={{
                           color: pos.side === 'YES' ? 'var(--green)' : 'var(--red)',
-                          fontWeight: 700,
-                          fontFamily: '"Barlow Condensed"',
-                          fontSize: 12,
-                          letterSpacing: '0.06em'
+                          fontWeight: 700, fontFamily: '"Barlow Condensed"',
+                          fontSize: '11px', letterSpacing: '0.06em'
                         }}>
                           {pos.side}
                         </span>
                       </td>
-                      <td style={{ color: 'var(--txt-sub)' }}>{(pos.entry_price * 100).toFixed(1)}¢</td>
-                      <td style={{ color: 'var(--txt)' }}>{fmt(pos.size_usd)}</td>
-                      <td style={{ color: pnlColor(pos.unrealized_pnl), fontWeight: 600 }}>
+                      <td className="txt-sub" style={{ fontSize: '10px' }}>{(pos.entry_price * 100).toFixed(1)}¢</td>
+                      <td style={{ color: 'var(--txt)', fontSize: '10px' }}>{fmt(pos.size_usd)}</td>
+                      <td style={{ color: pnlColor(pos.unrealized_pnl), fontWeight: 600, fontSize: '10px' }}>
                         {pos.unrealized_pnl != null ? fmtPnl(pos.unrealized_pnl) : '—'}
                       </td>
-                      <td style={{ color: 'var(--txt-mute)' }}>
+                      <td className="txt-mute" style={{ fontSize: '9.5px' }}>
                         {pos.opened_at ? new Date(pos.opened_at).toLocaleTimeString() : '—'}
                       </td>
                     </tr>
@@ -201,19 +215,29 @@ export default function VirtualMoney() {
         </div>
 
         {/* Closed Positions */}
-        <div className="vm-section">
-          <div className="vm-section-header">
-            <span className="vm-section-title">Closed Positions</span>
-            <span className="vm-section-badge">{closedList.length}</span>
+        <div style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', overflow: 'hidden'
+        }}>
+          <div className="section-hdr">
+            <span className="section-hdr-label">Closed Positions</span>
+            <span style={{
+              fontFamily: '"Barlow Condensed"', fontSize: '9.5px', fontWeight: 700,
+              background: 'var(--bg-base)', border: '1px solid var(--border-hi)',
+              color: 'var(--txt)', padding: '1px 8px'
+            }}>
+              {closedList.length}
+            </span>
           </div>
           {closedList.length === 0 ? (
-            <div className="vm-empty">No closed positions yet</div>
+            <div className="empty-state" style={{ borderTop: '1px dashed var(--border-dim)' }}>
+              No closed positions yet
+            </div>
           ) : (
-            <div className="vm-table-wrap">
+            <div className="data-table-wrap" style={{ maxHeight: '300px' }}>
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th style={{ minWidth: 240 }}>Market</th>
+                    <th style={{ minWidth: 220 }}>Market</th>
                     <th>Platform</th>
                     <th>Category</th>
                     <th>Side</th>
@@ -227,7 +251,7 @@ export default function VirtualMoney() {
                 <tbody>
                   {closedList.map((pos, i) => (
                     <tr key={i}>
-                      <td style={{ maxWidth: 340, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', lineHeight: 1.4 }}>
+                      <td style={{ maxWidth: 280, whiteSpace: 'normal', wordBreak: 'break-word', color: 'var(--txt)', fontSize: '10.5px', lineHeight: 1.4 }}>
                         {pos.question || pos.market_question || pos.market_id}
                       </td>
                       <td>
@@ -238,25 +262,23 @@ export default function VirtualMoney() {
                       <td>
                         {pos.category
                           ? <span className={`cat-badge cat-${pos.category}`}>{pos.category}</span>
-                          : <span style={{ color: 'var(--txt-mute)' }}>—</span>}
+                          : <span className="txt-mute">—</span>}
                       </td>
                       <td>
                         <span style={{
                           color: pos.side === 'YES' ? 'var(--green)' : 'var(--red)',
-                          fontWeight: 700,
-                          fontFamily: '"Barlow Condensed"',
-                          fontSize: 12,
-                          letterSpacing: '0.06em'
+                          fontWeight: 700, fontFamily: '"Barlow Condensed"',
+                          fontSize: '11px', letterSpacing: '0.06em'
                         }}>
                           {pos.side}
                         </span>
                       </td>
-                      <td style={{ color: 'var(--txt-sub)' }}>{(pos.entry_price * 100).toFixed(1)}¢</td>
-                      <td style={{ color: 'var(--txt-sub)' }}>
+                      <td className="txt-sub" style={{ fontSize: '10px' }}>{(pos.entry_price * 100).toFixed(1)}¢</td>
+                      <td className="txt-sub" style={{ fontSize: '10px' }}>
                         {pos.exit_price != null ? `${(pos.exit_price * 100).toFixed(1)}¢` : '—'}
                       </td>
-                      <td style={{ color: 'var(--txt)' }}>{fmt(pos.size_usd)}</td>
-                      <td style={{ color: pnlColor(pos.realized_pnl), fontWeight: 600 }}>
+                      <td style={{ color: 'var(--txt)', fontSize: '10px' }}>{fmt(pos.size_usd)}</td>
+                      <td style={{ color: pnlColor(pos.realized_pnl), fontWeight: 600, fontSize: '10px' }}>
                         {pos.realized_pnl != null ? fmtPnl(pos.realized_pnl) : '—'}
                       </td>
                       <td>
@@ -272,48 +294,59 @@ export default function VirtualMoney() {
           )}
         </div>
 
-        {/* By Category */}
+        {/* Category breakdown */}
         {cats.length > 0 && (
-          <div className="vm-section">
-            <div className="vm-section-header">
-              <span className="vm-section-title">Performance by Category</span>
-              <span className="vm-section-badge">{cats.length}</span>
+          <div style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border)', overflow: 'hidden'
+          }}>
+            <div className="section-hdr">
+              <span className="section-hdr-label">Performance by Category</span>
+              <span style={{
+                fontFamily: '"Barlow Condensed"', fontSize: '9.5px', fontWeight: 700,
+                background: 'var(--bg-base)', border: '1px solid var(--border-hi)',
+                color: 'var(--txt)', padding: '1px 8px'
+              }}>
+                {cats.length}
+              </span>
             </div>
-            <div className="vm-cat-grid">
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 0
+            }}>
               {cats.map(([cat, data]) => (
-                <div key={cat} className="vm-cat-card">
-                  <div className="vm-cat-top">
+                <div key={cat} style={{
+                  padding: '12px 16px', borderRight: '1px solid var(--border-dim)',
+                  borderBottom: '1px solid var(--border-dim)',
+                  display: 'flex', flexDirection: 'column', gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span className={`cat-badge cat-${cat}`}>{cat}</span>
-                    <span className="vm-cat-pnl" style={{ color: pnlColor(data.pnl) }}>
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: pnlColor(data.pnl) }}>
                       {fmtPnl(data.pnl)}
                     </span>
                   </div>
                   {data.win_rate != null && (
-                    <div className="vm-winbar-wrap">
-                      <div className="vm-winbar-fill" style={{
+                    <div style={{ height: '2px', background: 'var(--border)', borderRadius: '1px', overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%', borderRadius: '1px',
                         width: `${(data.win_rate || 0) * 100}%`,
                         background: data.win_rate >= 0.5 ? 'var(--green)' : 'var(--red)'
                       }} />
                     </div>
                   )}
-                  <div className="vm-cat-meta">
-                    <div className="vm-cat-meta-item">
-                      <span className="vm-cat-meta-label">Trades</span>
-                      <span>{data.trades ?? '—'}</span>
-                    </div>
-                    <div className="vm-cat-meta-item">
-                      <span className="vm-cat-meta-label">Win%</span>
-                      <span style={{ color: data.win_rate >= 0.5 ? 'var(--green)' : data.win_rate > 0 ? 'var(--red)' : 'var(--txt-sub)' }}>
+                  <div style={{ display: 'flex', gap: '12px', fontSize: '10px', color: 'var(--txt-sub)' }}>
+                    <span><span className="txt-mute" style={{ fontFamily: '"Barlow Condensed"', fontSize: '8.5px' }}>TRADES </span>{data.trades ?? '—'}</span>
+                    <span>
+                      <span className="txt-mute" style={{ fontFamily: '"Barlow Condensed"', fontSize: '8.5px' }}>WIN% </span>
+                      <span style={{ color: data.win_rate >= 0.5 ? 'var(--green)' : 'var(--red)' }}>
                         {data.win_rate != null ? `${(data.win_rate * 100).toFixed(0)}%` : '—'}
                       </span>
-                    </div>
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
           </div>
         )}
-
       </div>
     </div>
   )

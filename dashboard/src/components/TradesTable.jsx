@@ -7,12 +7,24 @@ function fmtTime(ts) {
   } catch { return '—' }
 }
 
+function fmtMS(ms) {
+  if (ms == null) return '—'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
 export default function TradesTable({ trades }) {
   return (
-    <div className="panel" style={{ flex: '0 0 auto', maxHeight: '220px' }}>
-      <div className="ph">
-        <span className="ph-label">Recent Trades</span>
-        <span className="ph-right num">{trades.length}</span>
+    <div className="table-panel">
+      <div className="section-hdr">
+        <span className="section-hdr-label">Recent Trades</span>
+        <span className="section-hdr-right">
+          <span className="section-hdr-dot" style={{
+            background: trades.length > 0 ? 'var(--green)' : 'var(--txt-mute)',
+            boxShadow: trades.length > 0 ? '0 0 4px rgba(26,158,75,0.5)' : 'none'
+          }} />
+          <span className="num">{trades.length}</span>
+        </span>
       </div>
       <div className="data-table-wrap">
         {trades.length === 0 ? (
@@ -22,34 +34,49 @@ export default function TradesTable({ trades }) {
             <thead>
               <tr>
                 <th>Time</th>
-                <th style={{ width: '35%' }}>Market</th>
+                <th style={{ width: '34%' }}>Market</th>
                 <th>Dir</th>
                 <th>Size</th>
                 <th>EV</th>
+                <th>Lat</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody>
               {trades.map((t, i) => {
                 const ev = t.ev
+                const lat = t.total_latency_ms ?? t.latency_ms
                 return (
                   <tr key={t.id || i}>
-                    <td className="txt-sub" style={{ fontSize: '10px' }}>{fmtTime(t.created_at)}</td>
-                    <td style={{ maxWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        title={t.market_question}>
+                    <td className="txt-sub" style={{ fontSize: '9.5px' }}>{fmtTime(t.created_at)}</td>
+                    <td style={{
+                      maxWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      fontSize: '10px',
+                    }} title={t.market_question}>
                       {t.market_question || '—'}
                     </td>
                     <td>
-                      <span className={t.side === 'YES' ? 'txt-green' : 'txt-red'}
-                            style={{ fontFamily: '"Barlow Condensed"', fontWeight: 700, fontSize: '11px' }}>
+                      <span style={{
+                        fontFamily: '"Barlow Condensed"', fontWeight: 700, fontSize: '10px',
+                        letterSpacing: '0.06em',
+                        color: t.side === 'YES' ? 'var(--green)' : 'var(--red)'
+                      }}>
                         {t.side === 'YES' ? '▲ YES' : t.side === 'NO' ? '▼ NO' : t.side || '—'}
                       </span>
                     </td>
-                    <td className="txt-amber">${Number(t.bet_amount || 0).toFixed(2)}</td>
+                    <td style={{ color: 'var(--amber)', fontSize: '10px' }}>
+                      ${Number(t.bet_amount || t.bet_usd || 0).toFixed(2)}
+                    </td>
                     <td>
-                      <span className={ev > 0 ? 'txt-green' : ev < 0 ? 'txt-red' : 'txt-sub'}>
+                      <span style={{
+                        fontSize: '9.5px',
+                        color: ev > 0 ? 'var(--green)' : ev < 0 ? 'var(--red)' : 'var(--txt-sub)'
+                      }}>
                         {ev != null ? ((ev > 0 ? '+' : '') + (ev * 100).toFixed(1) + '%') : '—'}
                       </span>
+                    </td>
+                    <td className="txt-mute" style={{ fontSize: '9.5px' }}>
+                      {fmtMS(lat)}
                     </td>
                     <td>
                       <span className={`status-pill s-${t.status}`}>{t.status || '—'}</span>

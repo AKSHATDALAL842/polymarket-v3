@@ -21,7 +21,7 @@ function Stat({ label, value, color }) {
   )
 }
 
-export default function StatusBar({ status, connected, tradingStatus, onModeChange }) {
+export default function StatusBar({ status, connected, tradingStatus, sources }) {
   const [time, setTime] = useState(new Date())
 
   useEffect(() => {
@@ -29,14 +29,21 @@ export default function StatusBar({ status, connected, tradingStatus, onModeChan
     return () => clearInterval(t)
   }, [])
 
-  const utc = time.toISOString().slice(11, 19)
+  const utc  = time.toISOString().slice(11, 19)
   const risk = status?.risk || {}
+
+  const totalEvents = sources?.event_counts
+    ? Object.values(sources.event_counts).reduce((a, b) => a + b, 0)
+    : 0
 
   return (
     <div className="statusbar">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <span className="sb-brand">POLYMARKET SIGNAL SYSTEM</span>
-        <span className="sb-version">V3</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span className="sb-brand">
+          <span className="sb-brand-dot" />
+          SIGNAL MATRIX V3
+        </span>
+        <span className="sb-engine-id">ENG-7F3A</span>
       </div>
 
       <div className="sb-center">
@@ -44,18 +51,18 @@ export default function StatusBar({ status, connected, tradingStatus, onModeChan
         <Stat label="Events"   value={status?.events_processed?.toLocaleString()} />
         <Stat label="Signals"  value={status?.signals_generated} color="var(--amber)" />
         <Stat label="Markets"  value={status?.tracked_markets} />
-        <Stat label="Cooldown" value={risk.in_cooldown ? 'YES' : 'NO'}
+        <Stat label="Throughput"
+          value={totalEvents > 0 ? `${Math.round(totalEvents / Math.max((status?.uptime_seconds || 1) / 60, 1))}/m` : '—'}
+        />
+        <Stat label="Cooldown" value={risk.in_cooldown ? 'ACTIVE' : 'CLEAR'}
           color={risk.in_cooldown ? 'var(--red)' : 'var(--green)'} />
-        <Stat label="Daily P&L"
-          value={risk.daily_pnl != null ? `$${risk.daily_pnl?.toFixed(2)}` : '—'}
-          color={risk.daily_pnl > 0 ? 'var(--green)' : risk.daily_pnl < 0 ? 'var(--red)' : undefined} />
       </div>
 
       <div className="sb-right">
-        <TradingModeControl tradingStatus={tradingStatus} onModeChange={onModeChange} />
+        <TradingModeControl tradingStatus={tradingStatus} onModeChange={() => {}} />
         <div className={`ws-badge ${connected ? 'live' : 'offline'}`}>
           <span className="ws-dot" />
-          {connected ? 'LIVE' : 'OFFLINE'}
+          {connected ? 'LIVE' : 'OFF'}
         </div>
         <span className="utc-clock">{utc} <span className="txt-mute">UTC</span></span>
       </div>
