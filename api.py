@@ -408,6 +408,201 @@ async def reset_risk_config():
     return {"status": "reset", "effective": cfg.get_effective_config()}
 
 
+# ===========================================================================
+# Debug / Observability endpoints
+# ===========================================================================
+
+@app.get("/debug/traces")
+async def debug_traces(
+    request: Request,
+    status: str | None = Query(default=None),
+    reason: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    market_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.logger import get_recent_traces
+    traces = get_recent_traces(limit=limit, status=status, reason=reason, severity=severity)
+    if market_id:
+        traces = [t for t in traces if t.get("market_id") == market_id]
+    return {"count": len(traces), "traces": traces}
+
+
+@app.get("/debug/traces/{trace_id}")
+async def debug_trace_detail(
+    trace_id: str,
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.logger import get_trace_by_id
+    from observability.tracer import get_trace as get_active, reconstruct_trace
+    active = get_active(trace_id)
+    if active:
+        row = active.finalize()
+        return {"source": "in_memory", "trace": row}
+    row = get_trace_by_id(trace_id)
+    if row:
+        reconstructed = reconstruct_trace(trace_id, row)
+        return {"source": "sqlite", "trace": reconstructed}
+    raise HTTPException(status_code=404, detail=f"Trace {trace_id} not found")
+
+
+@app.get("/debug/rejections")
+async def debug_rejections(
+    since: str | None = Query(default=None),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.logger import get_rejection_analytics
+    window = 3600
+    if since:
+        import re
+        m = re.match(r"(\d+)(h|m)", since)
+        if m:
+            val = int(m.group(1))
+            unit = m.group(2)
+            window = val * 3600 if unit == "h" else val * 60
+    return get_rejection_analytics(window_seconds=window)
+
+
+@app.get("/debug/pipeline")
+async def debug_pipeline(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.inspector import inspect
+    result = inspect(pipeline)
+    return result.__dict__
+
+
+@app.get("/debug/heatmap")
+async def debug_heatmap(
+    window: int = Query(default=3600, ge=60, le=86400),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.inspector import get_heatmap
+    result = get_heatmap(pipeline, window_seconds=window)
+    return result.__dict__
+
+
+@app.get("/debug/stages")
+async def debug_stages(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.stage_timer import get_stage_timer
+    timer = get_stage_timer()
+    dists = timer.get_all_distributions()
+    return {
+        stage: {
+            "p50_ms": round(d.p50_us / 1000, 2),
+            "p95_ms": round(d.p95_us / 1000, 2),
+            "p99_ms": round(d.p99_us / 1000, 2),
+            "mean_ms": round(d.mean_us / 1000, 2),
+            "min_ms": round(d.min_us / 1000, 2),
+            "max_ms": round(d.max_us / 1000, 2),
+            "count": d.count,
+        }
+        for stage, d in dists.items()
+    }
+
+
+@app.get("/debug/queues")
+async def debug_queues(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.inspector import _get_queue_depths
+    result = _get_queue_depths(pipeline)
+    return result.__dict__
+
+
+@app.get("/debug/dlq")
+async def debug_dlq(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.logger import get_dlq_stats
+    from observability.tracer import get_dlq
+    in_memory = get_dlq().stats()
+    persisted = get_dlq_stats()
+    return {"in_memory": in_memory, "persisted": persisted}
+
+
+@app.post("/debug/dlq/{dlq_id}/retry")
+async def debug_dlq_retry(
+    dlq_id: str,
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.tracer import get_dlq
+    from observability.logger import update_dead_letter
+    dlq = get_dlq()
+    for dl in dlq._queue:
+        if dl.dlq_id == dlq_id:
+            dl.retry_count += 1
+            dl.status = "pending"
+            update_dead_letter(dlq_id, "retrying")
+            return {"status": "retrying", "dlq_id": dlq_id, "retry_count": dl.retry_count}
+    raise HTTPException(status_code=404, detail=f"DLQ entry {dlq_id} not found")
+
+
+@app.post("/debug/dlq/{dlq_id}/bury")
+async def debug_dlq_bury(
+    dlq_id: str,
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from observability.tracer import get_dlq
+    from observability.logger import update_dead_letter
+    dlq = get_dlq()
+    if dlq.bury(dlq_id):
+        update_dead_letter(dlq_id, "dead")
+        return {"status": "buried", "dlq_id": dlq_id}
+    raise HTTPException(status_code=404, detail=f"DLQ entry {dlq_id} not found")
+
+
+@app.get("/debug/health")
+async def debug_health(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    return pipeline._health_monitor.status()
+
+
+@app.websocket("/ws/debug")
+async def ws_debug(websocket: WebSocket):
+    from observability import broadcaster
+    await websocket.accept()
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    broadcaster._subscribers.append(q)
+    log.info("[api] Debug WebSocket client connected")
+    ping_task = None
+    try:
+        ping_task = asyncio.create_task(_ws_ping(websocket))
+        while True:
+            try:
+                data = await asyncio.wait_for(q.get(), timeout=1.0)
+                await websocket.send_text(json.dumps(data))
+            except asyncio.TimeoutError:
+                continue
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.debug("[api] Debug WebSocket error", exc_info=True)
+    finally:
+        try:
+            broadcaster._subscribers.remove(q)
+        except ValueError:
+            pass
+        if ping_task is not None:
+            ping_task.cancel()
+        log.info("[api] Debug WebSocket client disconnected")
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,

@@ -18,6 +18,13 @@ from portfolio.risk import RiskManager
 from observability.metrics import get_tracker
 from signal import nlp_processor
 from observability import broadcaster
+from observability.tracer import (
+    create_trace, remove_trace, generate_news_id,
+    MarketMatchTrace, get_dlq, DeadLetter, SignalStage,
+)
+from observability.rejection import RejectionReason
+from observability.stage_timer import get_stage_timer
+from observability.health_monitor import HealthMonitor
 from alpha.momentum_alpha import MomentumAlpha
 from alpha.news_alpha import NewsAlpha
 from alpha.ensemble import combine
@@ -43,6 +50,7 @@ class Pipeline:
         self._momentum_alpha = MomentumAlpha()
         self._news_alpha = NewsAlpha()
         self._cold_path = get_cold_path_worker()
+        self._health_monitor = HealthMonitor(self)
         self._shutdown = asyncio.Event()
         self._child_tasks: set[asyncio.Task] = set()
 
@@ -61,12 +69,16 @@ class Pipeline:
 
         self._news_aggregator = NewsStream(self._news_queue)
 
+        from observability.broadcaster import start_heartbeat
+        start_heartbeat(self)
+
         bg_tasks = [
             asyncio.create_task(self.watcher.run(), name="watcher"),
             asyncio.create_task(self._news_aggregator.run(), name="news_aggregator"),
             asyncio.create_task(self._consume_news_queue(), name="news_consumer"),
             asyncio.create_task(self._momentum_alpha.run(self.watcher), name="momentum_alpha"),
             asyncio.create_task(self._cold_path.run(), name="cold_path"),
+            asyncio.create_task(self._health_monitor.run(), name="health_monitor"),
         ]
         shutdown_waiter = asyncio.create_task(self._shutdown.wait(), name="shutdown_waiter")
 
@@ -81,6 +93,8 @@ class Pipeline:
                     if exc is not None:
                         log.error("[pipeline] Background task %s failed: %s", t.get_name(), exc)
         finally:
+            from observability.broadcaster import stop_heartbeat
+            stop_heartbeat()
             self._shutdown.set()
             shutdown_waiter.cancel()
             for t in bg_tasks:
@@ -122,64 +136,186 @@ class Pipeline:
         t0 = time.monotonic()
         self._event_count += 1
 
-        if not self.risk.can_trade_daily():
-            log.warning("[pipeline] Daily loss limit hit — skipping event")
-            return
-        if self.risk.in_cooldown():
-            log.debug("[pipeline] In cooldown — skipping event")
-            return
+        news_id = generate_news_id()
+        trace = create_trace(
+            headline=event.headline,
+            source=event.source,
+            news_id=news_id,
+            source_id=event.source,
+        )
+        _log_trace_safe(trace.trace_id, event.headline, event.source,
+                        news_id=news_id, source_id=event.source)
+        self._health_monitor.feed_ingestion()
 
-        headline = event.headline
-        source = event.source
-        news_latency_ms = getattr(event, "receive_latency_ms", 0)
-
-        from ingestion.categories import is_relevant_event
-        if not is_relevant_event(event, config.SELECTED_CATEGORIES):
-            log.debug(f"[pipeline] Skipping (not in categories): {headline[:60]}")
-            return
-
-        if config.NLP_ENABLED:
-            age_seconds = event.age_seconds()
-            nlp = nlp_processor.process(
-                headline=headline,
-                source=source,
-                age_seconds=age_seconds,
-                novelty_score=0.5,
-            )
-            if nlp.relevance < config.NLP_MIN_IMPACT:
-                log.debug(f"[pipeline] NLP gate: relevance={nlp.relevance:.3f} < {config.NLP_MIN_IMPACT} — skipping")
-                return
-
-        markets = self.watcher.tracked_markets
-        if not markets:
-            return
+        timer = get_stage_timer()
 
         try:
-            matches = match_news_to_markets(headline, markets)
+            if not self.risk.can_trade_daily():
+                trace.reject(
+                    RejectionReason.DAILY_LOSS_CAP_HIT,
+                    detail="Daily loss limit hit before event processing",
+                    snapshot=config.get_effective_config(),
+                )
+                _persist_trace_safe(trace)
+                broadcaster.broadcast({
+                    "type": "signal_rejected", "trace_id": trace.trace_id,
+                    "reason": "DAILY_LOSS_CAP_HIT", "severity": "SOFT_REJECT",
+                    "subsystem": "risk", "timestamp": time.time(),
+                })
+                remove_trace(trace.trace_id)
+                return
+            if self.risk.in_cooldown():
+                trace.reject(
+                    RejectionReason.COOLDOWN_ACTIVE,
+                    detail="RiskManager cooldown active",
+                    snapshot=config.get_effective_config(),
+                )
+                _persist_trace_safe(trace)
+                broadcaster.broadcast({
+                    "type": "signal_rejected", "trace_id": trace.trace_id,
+                    "reason": "COOLDOWN_ACTIVE", "severity": "SOFT_REJECT",
+                    "subsystem": "risk", "timestamp": time.time(),
+                })
+                remove_trace(trace.trace_id)
+                return
+
+            headline = event.headline
+            source = event.source
+            news_latency_ms = getattr(event, "receive_latency_ms", 0)
+
+            from ingestion.categories import is_relevant_event
+            if not is_relevant_event(event, config.SELECTED_CATEGORIES):
+                trace.reject(
+                    RejectionReason.CATEGORY_NOT_SELECTED,
+                    detail="Event headline not in selected categories",
+                    snapshot=config.get_effective_config(),
+                )
+                _persist_trace_safe(trace)
+                remove_trace(trace.trace_id)
+                return
+
+            if config.NLP_ENABLED:
+                age_seconds = event.age_seconds()
+                with timer.measure(trace.trace_id, "NLP", critical=False):
+                    nlp = nlp_processor.process(
+                        headline=headline,
+                        source=source,
+                        age_seconds=age_seconds,
+                        novelty_score=0.5,
+                    )
+                trace.transition(SignalStage.NLP_PROCESSED)
+                if nlp.relevance < config.NLP_MIN_IMPACT:
+                    trace.reject(
+                        RejectionReason.NLP_IMPACT_BELOW_THRESHOLD,
+                        threshold=config.NLP_MIN_IMPACT,
+                        actual=round(nlp.relevance, 4),
+                        snapshot=config.get_effective_config(),
+                        detail=f"NLP relevance {nlp.relevance:.3f} < {config.NLP_MIN_IMPACT}",
+                    )
+                    _persist_trace_safe(trace)
+                    broadcaster.broadcast({
+                        "type": "signal_rejected", "trace_id": trace.trace_id,
+                        "reason": "NLP_IMPACT_BELOW_THRESHOLD", "severity": "HARD_REJECT",
+                        "subsystem": "nlp", "threshold": config.NLP_MIN_IMPACT,
+                        "actual": round(nlp.relevance, 4), "timestamp": time.time(),
+                    })
+                    remove_trace(trace.trace_id)
+                    return
+
+            markets = self.watcher.tracked_markets
+            if not markets:
+                remove_trace(trace.trace_id)
+                return
+
+            try:
+                with timer.measure(trace.trace_id, "MATCHER", critical=False):
+                    matches = match_news_to_markets(headline, markets)
+            except Exception as e:
+                log.warning(f"[pipeline] Matcher failed for '{headline[:60]}': {e}")
+                trace.reject(
+                    RejectionReason.PIPELINE_EXCEPTION,
+                    detail=f"Matcher exception: {e}",
+                    snapshot=config.get_effective_config(),
+                )
+                _persist_trace_safe(trace)
+                remove_trace(trace.trace_id)
+                return
+
+            trace.transition(SignalStage.MARKET_MATCHED)
+
+            if matches:
+                top_match = matches[0]
+                mt = MarketMatchTrace(
+                    trace_id=trace.trace_id,
+                    market_id=top_match.market.condition_id,
+                    market_question=top_match.market.question,
+                    similarity_score=top_match.similarity,
+                    match_method=top_match.match_method,
+                    rank_position=1,
+                    embedding_distance=1.0 - top_match.similarity,
+                    rejected_alternatives=[
+                        {"market_id": m.market.condition_id, "score": m.similarity,
+                         "reason": "below_top_k" if i >= config.MATCHER_TOP_K else "lower_score"}
+                        for i, m in enumerate(matches[config.MATCHER_TOP_K:])
+                    ],
+                )
+                trace.set_match_trace(mt)
+                trace.context.market_id = top_match.market.condition_id
+            else:
+                trace.reject(
+                    RejectionReason.NO_MARKET_MATCHES,
+                    threshold=config.MATCHER_MIN_SIMILARITY,
+                    snapshot=config.get_effective_config(),
+                    detail=f"No market matches for headline",
+                )
+                _persist_trace_safe(trace)
+                broadcaster.broadcast({
+                    "type": "signal_rejected", "trace_id": trace.trace_id,
+                    "reason": "NO_MARKET_MATCHES", "severity": "HARD_REJECT",
+                    "subsystem": "matcher", "threshold": config.MATCHER_MIN_SIMILARITY,
+                    "timestamp": time.time(),
+                })
+                remove_trace(trace.trace_id)
+                return
+
+            log.info(f"[pipeline] Event: '{headline[:60]}' -> {len(matches)} candidate markets (source={source})")
+
+            tasks = [
+                self._process_market(
+                    event=event, market=match.market,
+                    similarity=match.similarity,
+                    news_latency_ms=news_latency_ms, t0=t0,
+                    parent_trace_id=trace.trace_id,
+                )
+                for match in matches
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    log.error(f"[pipeline] Market processing error: {r}")
+
+            self._health_monitor.feed_signal()
+
+            elapsed = int((time.monotonic() - t0) * 1000)
+            log.debug(f"[pipeline] Event processed in {elapsed}ms")
+
+            _persist_trace_safe(trace)
+            remove_trace(trace.trace_id)
+
         except Exception as e:
-            log.warning(f"[pipeline] Matcher failed for '{headline[:60]}': {e}")
-            return
-        if not matches:
-            log.debug(f"[pipeline] No market matches for: {headline[:60]}")
-            return
-
-        log.info(f"[pipeline] Event: '{headline[:60]}' → {len(matches)} candidate markets (source={source})")
-
-        tasks = [
-            self._process_market(
-                event=event, market=match.market,
-                similarity=match.similarity,
-                news_latency_ms=news_latency_ms, t0=t0,
+            dl = DeadLetter(
+                payload={"headline": event.headline, "source": event.source},
+                exception=repr(e),
+                subsystem="pipeline._handle_event",
+                trace_id=trace.trace_id if 'trace' in locals() else None,
             )
-            for match in matches
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in results:
-            if isinstance(r, Exception):
-                log.error(f"[pipeline] Market processing error: {r}")
-
-        elapsed = int((time.monotonic() - t0) * 1000)
-        log.debug(f"[pipeline] Event processed in {elapsed}ms")
+            get_dlq().push(dl)
+            try:
+                from observability.logger import log_dead_letter
+                log_dead_letter(dl.dlq_id, dl.trace_id, dl.subsystem, dl.exception, dl.payload)
+            except Exception:
+                pass
+            log.error("[pipeline] Event processing exception (dlq=%s): %s", dl.dlq_id, e)
 
     async def _process_market(
         self,
@@ -188,173 +324,274 @@ class Pipeline:
         similarity: float,
         news_latency_ms: int,
         t0: float,
+        parent_trace_id: str | None = None,
     ):
         if self._shutdown.is_set():
             return
-        last = self._last_signal_time.get(market.condition_id, 0.0)
-        if time.monotonic() - last < config.MARKET_SIGNAL_COOLDOWN_SECONDS:
-            log.debug(f"[pipeline] Market cooldown active: {market.question[:50]}")
-            return
-
-        cls_start = time.monotonic()
-
-        if config.HOT_PATH_ENABLED and fast_classifier.is_trained():
-            fast_result = fast_classifier.predict(
-                headline=event.headline,
-                source=event.source,
-                market_yes_price=market.yes_price,
-                age_seconds=event.age_seconds(),
-            )
-            if fast_result.confidence < config.FAST_CLASSIFIER_MIN_CONFIDENCE:
-                log.debug(
-                    f"[pipeline] hot path filtered: conf={fast_result.confidence:.2f} "
-                    f"method={fast_result.method} '{market.question[:40]}'"
-                )
-                return
-            classification = fast_classifier.build_classification(fast_result)
-            ob = await self.watcher.fetch_order_book(market)
-        else:
-            classification, ob = await asyncio.gather(
-                classify_async(headline=event.headline, market=market, source=event.source),
-                self.watcher.fetch_order_book(market),
-            )
-
-        cls_latency_ms = int((time.monotonic() - cls_start) * 1000)
-
-        log.debug(
-            f"[pipeline] classify done in {cls_latency_ms}ms: "
-            f"dir={classification.direction} actionable={classification.is_actionable} "
-            f"'{market.question[:40]}'"
+        child_trace = create_trace(
+            headline=event.headline,
+            source=event.source,
+            parent_trace_id=parent_trace_id,
         )
+        child_trace.context.market_id = market.condition_id
+        timer = get_stage_timer()
 
-        if not classification.is_actionable:
-            log.debug(f"[pipeline] Not actionable: {market.question[:50]}")
-            return
-
-        snap = self.watcher.get_snapshot(market.condition_id)
-
-        if snap and snap.is_moving:
-            log.info(f"[pipeline] Market already moving, skipping: {market.question[:50]}")
-            return
-
-        spread = ob.spread if ob.spread > 0.001 else (snap.spread if snap else 0.05)
-        liquidity_score = ob.liquidity_score
-
-        if ob.bid_depth_usd < config.MIN_ORDERBOOK_DEPTH_USD and ob.bid_depth_usd > 0:
-            log.debug(f"[pipeline] Insufficient depth (${ob.bid_depth_usd:.0f}), skipping")
-            return
-
-        signal = compute_edge(
-            market=market, classification=classification,
-            liquidity_score=liquidity_score, spread=spread,
-            estimated_slippage=snap.estimated_slippage(classification.direction, 25.0) if snap else 0.0,
-        )
-        if signal is None:
-            return
-
-        if snap and config.HOT_PATH_ENABLED and hasattr(snap, "yes_price"):
-            predicted_move = abs(signal.p_true - market.yes_price)
-            actual_move = abs(snap.yes_price - market.yes_price)
-            if predicted_move > 0 and actual_move >= predicted_move * config.STALENESS_THRESHOLD:
-                log.info(
-                    f"[pipeline] Staleness abort: market already moved "
-                    f"{actual_move:.3f} of predicted {predicted_move:.3f} — '{market.question[:45]}'"
+        try:
+            last = self._last_signal_time.get(market.condition_id, 0.0)
+            if time.monotonic() - last < config.MARKET_SIGNAL_COOLDOWN_SECONDS:
+                child_trace.reject(
+                    RejectionReason.MARKET_COOLDOWN_ACTIVE,
+                    detail=f"Market cooldown active: {market.question[:50]}",
+                    snapshot=config.get_effective_config(),
                 )
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
                 return
 
-        self._last_signal_time[market.condition_id] = time.monotonic()
+            cls_start = time.monotonic()
 
-        total_elapsed_ms = int((time.monotonic() - t0) * 1000)
-        signal.news_latency_ms = news_latency_ms
-        signal.classification_latency_ms = cls_latency_ms
-        signal.total_latency_ms = total_elapsed_ms
-        signal.news_source = event.source
-        signal.headlines = event.headline
+            if config.HOT_PATH_ENABLED and fast_classifier.is_trained():
+                with timer.measure(child_trace.trace_id, "CLASSIFIER", critical=False):
+                    fast_result = fast_classifier.predict(
+                        headline=event.headline,
+                        source=event.source,
+                        market_yes_price=market.yes_price,
+                        age_seconds=event.age_seconds(),
+                    )
+                if fast_result.confidence < config.FAST_CLASSIFIER_MIN_CONFIDENCE:
+                    child_trace.reject(
+                        RejectionReason.CLASSIFIER_HOT_PATH_FILTERED,
+                        threshold=config.FAST_CLASSIFIER_MIN_CONFIDENCE,
+                        actual=round(fast_result.confidence, 4),
+                        snapshot=config.get_effective_config(),
+                        detail=f"Hot path filtered: conf={fast_result.confidence:.2f}",
+                    )
+                    _persist_trace_safe(child_trace)
+                    broadcaster.broadcast({
+                        "type": "signal_rejected", "trace_id": child_trace.trace_id,
+                        "reason": "CLASSIFIER_HOT_PATH_FILTERED", "severity": "HARD_REJECT",
+                        "subsystem": "classifier", "threshold": config.FAST_CLASSIFIER_MIN_CONFIDENCE,
+                        "actual": round(fast_result.confidence, 4), "timestamp": time.time(),
+                    })
+                    remove_trace(child_trace.trace_id)
+                    return
+                classification = fast_classifier.build_classification(fast_result)
+                ob = await self.watcher.fetch_order_book(market)
+            else:
+                with timer.measure(child_trace.trace_id, "CLASSIFIER", critical=False):
+                    classification, ob = await asyncio.gather(
+                        classify_async(headline=event.headline, market=market, source=event.source),
+                        self.watcher.fetch_order_book(market),
+                    )
 
-        if total_elapsed_ms > config.SPEED_TARGET_SECONDS * 1000:
-            log.warning(f"[pipeline] Speed target missed: {total_elapsed_ms}ms")
+            child_trace.transition(SignalStage.SCORED)
 
-        self._signal_count += 1
+            cls_latency_ms = int((time.monotonic() - cls_start) * 1000)
 
-        news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
-        if news_alpha_sig is None:
+            log.debug(
+                f"[pipeline] classify done in {cls_latency_ms}ms: "
+                f"dir={classification.direction} actionable={classification.is_actionable} "
+                f"'{market.question[:40]}'"
+            )
+
+            if not classification.is_actionable:
+                child_trace.reject(
+                    RejectionReason.CLASSIFIER_NOT_ACTIONABLE,
+                    threshold=config.MIN_CONFIDENCE,
+                    actual=round(classification.confidence, 4),
+                    snapshot=config.get_effective_config(),
+                    detail=f"Not actionable: conf={classification.confidence:.2f} mat={classification.materiality:.2f}",
+                )
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
+                return
+
+            snap = self.watcher.get_snapshot(market.condition_id)
+
+            if snap and snap.is_moving:
+                child_trace.reject(
+                    RejectionReason.MOMENTUM_ALREADY_MOVING,
+                    threshold=config.MOMENTUM_THRESHOLD,
+                    actual=round(abs(snap.momentum), 4),
+                    snapshot=config.get_effective_config(),
+                    detail=f"Market already moving: momentum={snap.momentum:.4f}",
+                )
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
+                return
+
+            spread = ob.spread if ob.spread > 0.001 else (snap.spread if snap else 0.05)
+            liquidity_score = ob.liquidity_score
+
+            if ob.bid_depth_usd < config.MIN_ORDERBOOK_DEPTH_USD and ob.bid_depth_usd > 0:
+                child_trace.reject(
+                    RejectionReason.INSUFFICIENT_DEPTH,
+                    threshold=config.MIN_ORDERBOOK_DEPTH_USD,
+                    actual=round(ob.bid_depth_usd, 2),
+                    snapshot=config.get_effective_config(),
+                    detail=f"Insufficient depth: ${ob.bid_depth_usd:.0f}",
+                )
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
+                return
+
+            with timer.measure(child_trace.trace_id, "EDGE", critical=False):
+                signal = compute_edge(
+                    market=market, classification=classification,
+                    liquidity_score=liquidity_score, spread=spread,
+                    estimated_slippage=snap.estimated_slippage(classification.direction, 25.0) if snap else 0.0,
+                )
+
+            child_trace.transition(SignalStage.VALIDATED)
+
+            if signal is None:
+                child_trace.reject(
+                    RejectionReason.EDGE_EV_BELOW_THRESHOLD,
+                    threshold=config.EDGE_THRESHOLD,
+                    snapshot=config.get_effective_config(),
+                    detail="Edge model returned None (EV below threshold or gate failed)",
+                )
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
+                return
+
+            if snap and config.HOT_PATH_ENABLED and hasattr(snap, "yes_price"):
+                predicted_move = abs(signal.p_true - market.yes_price)
+                actual_move = abs(snap.yes_price - market.yes_price)
+                if predicted_move > 0 and actual_move >= predicted_move * config.STALENESS_THRESHOLD:
+                    child_trace.reject(
+                        RejectionReason.STALENESS_ABORT,
+                        threshold=config.STALENESS_THRESHOLD,
+                        actual=round(actual_move / max(predicted_move, 0.0001), 4),
+                        snapshot=config.get_effective_config(),
+                        detail=f"Staleness abort: market moved {actual_move:.3f} of predicted {predicted_move:.3f}",
+                    )
+                    _persist_trace_safe(child_trace)
+                    remove_trace(child_trace.trace_id)
+                    return
+
+            self._last_signal_time[market.condition_id] = time.monotonic()
+
+            child_trace.transition(SignalStage.SIZED)
+
+            total_elapsed_ms = int((time.monotonic() - t0) * 1000)
+            signal.news_latency_ms = news_latency_ms
+            signal.classification_latency_ms = cls_latency_ms
+            signal.total_latency_ms = total_elapsed_ms
+            signal.news_source = event.source
+            signal.headlines = event.headline
+
+            if total_elapsed_ms > config.SPEED_TARGET_SECONDS * 1000:
+                log.warning(f"[pipeline] Speed target missed: {total_elapsed_ms}ms")
+
+            self._signal_count += 1
+            self._health_monitor.feed_signal()
+
+            news_alpha_sig = self._news_alpha.to_alpha_signal(signal)
+            if news_alpha_sig is None:
+                broadcaster.broadcast({
+                    "type":       "signal",
+                    "trace_id":   child_trace.trace_id,
+                    "side":       signal.side,
+                    "market":     market.question,
+                    "market_id":  market.condition_id,
+                    "p_market":   round(signal.p_market, 4),
+                    "p_true":     round(signal.p_true, 4),
+                    "ev":         round(signal.ev, 4),
+                    "bet_usd":    0.0,
+                    "status":     "filtered",
+                    "source":     signal.news_source,
+                    "headline":   signal.headlines[:120],
+                    "latency_ms": total_elapsed_ms,
+                    "strategies": ["news"],
+                    "timestamp":  datetime.now(timezone.utc).isoformat(),
+                })
+                child_trace.transition(SignalStage.REJECTED)
+                _persist_trace_safe(child_trace)
+                remove_trace(child_trace.trace_id)
+                return
+
+            momentum_sig = self._momentum_alpha.get_signal(market.condition_id)
+            all_alpha_sigs = [news_alpha_sig]
+            if momentum_sig is not None:
+                all_alpha_sigs.append(momentum_sig)
+
+            aggregated = combine(all_alpha_sigs)
+            result = await PortfolioManager.instance().process_signal_async(aggregated)
+
+            if result.success and result.filled_size > 0:
+                self.metrics.record_trade(pnl=0.0, ev=signal.ev, latency_ms=result.latency_ms)
+                child_trace.transition(SignalStage.EXECUTED)
+                child_trace.context.execution_id = str(result.trade_id) if result.trade_id else None
+                child_trace.context.position_id = result.trade_id
+
+            if config.HOT_PATH_ENABLED:
+                is_loss = result.status in ("error_order_failed", "rejected", "error_no_clob_client",
+                                             "error_no_token", "error_client_init", "error_no_auth")
+                self._cold_path.submit(ColdPathJob(
+                    headline=event.headline,
+                    source=event.source,
+                    market_id=market.condition_id,
+                    market_question=market.question,
+                    yes_price=market.yes_price,
+                    fast_confidence=classification.confidence,
+                    is_loss_trade=is_loss,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ))
+
+            elif not config.HOT_PATH_ENABLED and classification.is_actionable:
+                self._cold_path.submit(ColdPathJob(
+                    headline=event.headline,
+                    source=event.source,
+                    market_id=market.condition_id,
+                    market_question=market.question,
+                    yes_price=market.yes_price,
+                    fast_confidence=classification.confidence,
+                    is_loss_trade=result.filled_size == 0,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ))
+
+            log.info(
+                f"[pipeline] ok {result.status} {signal.side} ${result.filled_size:.2f} "
+                f"'{market.question[:45]}' ev={signal.ev:.3f} "
+                f"strategies={aggregated.strategies} latency={result.latency_ms}ms"
+            )
+
             broadcaster.broadcast({
                 "type":       "signal",
+                "trace_id":   child_trace.trace_id,
                 "side":       signal.side,
                 "market":     market.question,
                 "market_id":  market.condition_id,
                 "p_market":   round(signal.p_market, 4),
                 "p_true":     round(signal.p_true, 4),
                 "ev":         round(signal.ev, 4),
-                "bet_usd":    0.0,
-                "status":     "filtered",
+                "bet_usd":    result.filled_size,
+                "status":     result.status,
                 "source":     signal.news_source,
                 "headline":   signal.headlines[:120],
-                "latency_ms": total_elapsed_ms,
-                "strategies": ["news"],
+                "latency_ms": result.latency_ms,
+                "strategies": aggregated.strategies,
                 "timestamp":  datetime.now(timezone.utc).isoformat(),
             })
-            return
 
-        momentum_sig = self._momentum_alpha.get_signal(market.condition_id)
-        all_alpha_sigs = [news_alpha_sig]
-        if momentum_sig is not None:
-            all_alpha_sigs.append(momentum_sig)
+            _persist_trace_safe(child_trace)
+            remove_trace(child_trace.trace_id)
 
-        aggregated = combine(all_alpha_sigs)
-        result = await PortfolioManager.instance().process_signal_async(aggregated)
-
-        if result.success and result.filled_size > 0:
-            self.metrics.record_trade(pnl=0.0, ev=signal.ev, latency_ms=result.latency_ms)
-
-        if config.HOT_PATH_ENABLED:
-            is_loss = result.status in ("error_order_failed", "rejected", "error_no_clob_client",
-                                         "error_no_token", "error_client_init", "error_no_auth")
-            self._cold_path.submit(ColdPathJob(
-                headline=event.headline,
-                source=event.source,
-                market_id=market.condition_id,
-                market_question=market.question,
-                yes_price=market.yes_price,
-                fast_confidence=classification.confidence,
-                is_loss_trade=is_loss,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
-
-        elif not config.HOT_PATH_ENABLED and classification.is_actionable:
-            self._cold_path.submit(ColdPathJob(
-                headline=event.headline,
-                source=event.source,
-                market_id=market.condition_id,
-                market_question=market.question,
-                yes_price=market.yes_price,
-                fast_confidence=classification.confidence,
-                is_loss_trade=result.filled_size == 0,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
-
-        log.info(
-            f"[pipeline] ✓ {result.status} {signal.side} ${result.filled_size:.2f} "
-            f"'{market.question[:45]}' ev={signal.ev:.3f} "
-            f"strategies={aggregated.strategies} latency={result.latency_ms}ms"
-        )
-
-        broadcaster.broadcast({
-            "type":       "signal",
-            "side":       signal.side,
-            "market":     market.question,
-            "market_id":  market.condition_id,
-            "p_market":   round(signal.p_market, 4),
-            "p_true":     round(signal.p_true, 4),
-            "ev":         round(signal.ev, 4),
-            "bet_usd":    result.filled_size,
-            "status":     result.status,
-            "source":     signal.news_source,
-            "headline":   signal.headlines[:120],
-            "latency_ms": result.latency_ms,
-            "strategies": aggregated.strategies,
-            "timestamp":  datetime.now(timezone.utc).isoformat(),
-        })
+        except Exception as e:
+            dl = DeadLetter(
+                payload={"headline": event.headline, "market_id": market.condition_id},
+                exception=repr(e),
+                subsystem="pipeline._process_market",
+                trace_id=child_trace.trace_id if 'child_trace' in locals() else None,
+            )
+            get_dlq().push(dl)
+            try:
+                from observability.logger import log_dead_letter
+                log_dead_letter(dl.dlq_id, dl.trace_id, dl.subsystem, dl.exception, dl.payload)
+            except Exception:
+                pass
+            log.error("[pipeline] Market processing exception (dlq=%s): %s", dl.dlq_id, e)
 
     def status(self) -> dict:
         elapsed = time.monotonic() - (self._start_time or time.monotonic())
@@ -372,6 +609,57 @@ class Pipeline:
         if self._news_aggregator is None:
             return {"error": "news aggregator not started yet"}
         return dict(self._news_aggregator.stats)
+
+
+def _persist_trace_safe(trace):
+    """Flush trace to SQLite. Never raises."""
+    try:
+        from observability.logger import update_trace
+        import json as _json
+        row = trace.finalize()
+        rejection = trace.rejection
+        update_trace(
+            trace.trace_id,
+            final_stage=row["final_stage"],
+            final_status=row["final_status"],
+            rejection_reason=row["rejection_reason"],
+            rejection_severity=row["rejection_severity"],
+            rejection_detail=_json.dumps({
+                "threshold": rejection.threshold_value if rejection else None,
+                "actual": rejection.actual_value if rejection else None,
+                "subsystem": rejection.subsystem if rejection else None,
+                "detail": rejection.detail if rejection else None,
+                "snapshot": rejection.threshold_snapshot if rejection else {},
+            }) if rejection else None,
+            match_trace=_json.dumps({
+                "trace_id": trace.match_trace.trace_id,
+                "market_id": trace.match_trace.market_id,
+                "market_question": trace.match_trace.market_question,
+                "similarity_score": trace.match_trace.similarity_score,
+                "matched_entities": trace.match_trace.matched_entities,
+                "keywords_hit": trace.match_trace.keywords_hit,
+                "embedding_distance": trace.match_trace.embedding_distance,
+                "rank_position": trace.match_trace.rank_position,
+                "match_method": trace.match_trace.match_method,
+                "rejected_alternatives": trace.match_trace.rejected_alternatives,
+            }) if trace.match_trace else None,
+            stage_timings=_json.dumps(trace.stage_timings) if trace.stage_timings else None,
+            total_latency_ms=trace.total_latency_ms,
+            market_id=trace.context.market_id,
+            execution_id=trace.context.execution_id,
+            position_id=trace.context.position_id,
+        )
+    except Exception:
+        pass
+
+
+def _log_trace_safe(trace_id, headline, source, **kwargs):
+    """Fire-and-forget trace persistence. Never raises."""
+    try:
+        from observability.logger import log_trace
+        log_trace(trace_id, headline, source, **kwargs)
+    except Exception:
+        pass
 
 
 def run_pipeline_v2(dry_run: bool | None = None):
