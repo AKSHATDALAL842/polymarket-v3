@@ -207,6 +207,14 @@ async def categories_info(pipeline=Depends(_get_pipeline), _auth=Depends(_requir
     }
 
 
+@app.get("/news/headlines")
+async def news_headlines(limit: int = Query(default=50, ge=1, le=200)):
+    """Recent raw headlines from the ingestion pipeline."""
+    from ingestion.news_stream import get_recent_headlines
+    headlines = get_recent_headlines(limit=limit)
+    return {"count": len(headlines), "headlines": headlines}
+
+
 @app.get("/sources")
 async def sources(pipeline=Depends(_get_pipeline), _auth=Depends(_require_auth)):
     stats = pipeline.get_source_stats()
@@ -363,6 +371,41 @@ async def get_trading_status(_auth=Depends(_require_auth)):
         "is_live": tm.is_live,
         "history": tm.get_history()[-10:],
     }
+
+
+# ── Runtime config endpoints ──────────────────────────────────────────
+
+class ConfigOverrideRequest(BaseModel):
+    overrides: dict[str, object]  # {"SIZING_K": 0.40, "MIN_CONFIDENCE": 0.50, ...}
+
+
+@app.get("/config/risk")
+async def get_risk_config():
+    """Return current effective config values for all overridable keys."""
+    import config as cfg
+    return {
+        "overrides": cfg.get_overrides(),
+        "effective": cfg.get_effective_config(),
+    }
+
+
+@app.post("/config/risk")
+async def set_risk_config(request: ConfigOverrideRequest):
+    """Apply one or more runtime config overrides."""
+    import config as cfg
+    results = {}
+    for key, value in request.overrides.items():
+        ok = cfg.override(key, value)
+        results[key] = "applied" if ok else "rejected"
+    return {"results": results, "effective": cfg.get_effective_config()}
+
+
+@app.post("/config/risk/reset")
+async def reset_risk_config():
+    """Reset all runtime config overrides to defaults."""
+    import config as cfg
+    cfg.restore()
+    return {"status": "reset", "effective": cfg.get_effective_config()}
 
 
 if __name__ == "__main__":

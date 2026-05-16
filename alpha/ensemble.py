@@ -4,11 +4,13 @@ from alpha.signal import AlphaSignal, AggregatedSignal
 
 log = logging.getLogger(__name__)
 
-# news=0.6 (LLM-backed), momentum=0.4 (price-driven, shorter horizon)
-STRATEGY_WEIGHTS: dict[str, float] = {
-    "news":     0.6,
-    "momentum": 0.4,
-}
+
+def _strategy_weights() -> dict[str, float]:
+    import config
+    return {
+        "news":     config.NEWS_WEIGHT,
+        "momentum": config.MOMENTUM_WEIGHT,
+    }
 
 
 def combine(signals: list[AlphaSignal]) -> AggregatedSignal:
@@ -36,10 +38,11 @@ def combine(signals: list[AlphaSignal]) -> AggregatedSignal:
     deduped = list(by_strategy.values())
     strategies = [s.strategy for s in deduped]
 
+    weights = _strategy_weights()
     yes_score = 0.0
     no_score  = 0.0
     for sig in deduped:
-        w = STRATEGY_WEIGHTS.get(sig.strategy, 0.5)
+        w = weights.get(sig.strategy, 0.5)
         if sig.direction == "YES":
             yes_score += w * sig.confidence
         else:
@@ -85,10 +88,11 @@ def combine(signals: list[AlphaSignal]) -> AggregatedSignal:
 def _weighted_avg(signals: list[AlphaSignal], attr: str) -> float:
     if not signals:
         return 0.0
-    total_w = sum(STRATEGY_WEIGHTS.get(s.strategy, 0.5) for s in signals)
+    weights = _strategy_weights()
+    total_w = sum(weights.get(s.strategy, 0.5) for s in signals)
     if total_w == 0:
         return 0.0
     return sum(
-        STRATEGY_WEIGHTS.get(s.strategy, 0.5) * getattr(s, attr)
+        weights.get(s.strategy, 0.5) * getattr(s, attr)
         for s in signals
     ) / total_w
