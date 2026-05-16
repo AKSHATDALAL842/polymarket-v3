@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -153,6 +153,16 @@ class MarketMatch:
     market: Market
     similarity: float
     match_method: str
+    score_components: dict = field(default_factory=dict)
+
+
+def _entity_overlap_score(headline_entities: set[str], market_question: str) -> float:
+    """Score how many headline entities appear in the market question."""
+    if not headline_entities:
+        return 0.0
+    q_lower = market_question.lower()
+    hits = sum(1 for e in headline_entities if e.lower() in q_lower)
+    return min(1.0, hits / max(1, len(headline_entities)) * 1.5)
 
 
 def match_news_to_markets(
@@ -166,10 +176,133 @@ def match_news_to_markets(
 
     embed = get_embed_fn()
 
-    if embed is not None and _cache.all_entries():
-        return _semantic_match(headline, k, threshold)
+    # Extract entities from headline for overlap scoring
+    headline_entities: set[str] = set()
+    try:
+        from signal.nlp_processor import extract_entities as _nlp_entities
+        for e in _nlp_entities(headline):
+            headline_entities.add(e.text)
+    except Exception:
+        pass
 
-    return _keyword_match(headline, markets, k)
+    # Extract keywords from headline for overlap scoring
+    headline_keywords = set(_extract_keywords(headline))
+
+    # Get semantic matches (always try, even if embedding cache partial)
+    semantic_results: list[MarketMatch] = []
+    if embed is not None and _cache.all_entries():
+        semantic_results = _semantic_match_raw(headline, k * 2, threshold * 0.5)
+
+    # Get keyword matches for all markets
+    keyword_results = _keyword_match_raw(headline, markets, k * 2)
+
+    # Merge and rescore with hybrid formula
+    all_candidates: dict[str, MarketMatch] = {}
+    for m in semantic_results:
+        all_candidates[m.market.condition_id] = m
+    for m in keyword_results:
+        if m.market.condition_id not in all_candidates:
+            all_candidates[m.market.condition_id] = m
+
+    # Hybrid rescoring
+    for cid, match in all_candidates.items():
+        entity_score = _entity_overlap_score(headline_entities, match.market.question)
+        kw_score = _keyword_jaccard(headline_keywords, match.market.question)
+        sem_score = match.similarity if match.match_method == "semantic" else 0.0
+        raw_kw_score = match.similarity if match.match_method == "keyword" else 0.0
+
+        # Base score: best of semantic or keyword, then boost with entity/kw overlap
+        base_score = max(sem_score, raw_kw_score)
+        entity_bonus = entity_score * 0.25
+        kw_bonus = kw_score * 0.15
+        hybrid = min(1.0, base_score + entity_bonus + kw_bonus)
+        match.similarity = round(hybrid, 4)
+        match.score_components = {
+            "semantic": round(sem_score, 4),
+            "entity_overlap": round(entity_score, 4),
+            "keyword_overlap": round(kw_score, 4),
+            "raw_keyword": round(raw_kw_score, 4),
+            "hybrid": match.similarity,
+        }
+
+    ranked = sorted(all_candidates.values(), key=lambda x: x.similarity, reverse=True)
+    return [m for m in ranked[:k] if m.similarity >= threshold]
+
+
+def _semantic_match_raw(
+    headline: str,
+    top_k: int,
+    threshold: float,
+) -> list[MarketMatch]:
+    """Raw semantic matching without keyword fallback."""
+    embed = get_embed_fn()
+    entries = _cache.all_entries()
+    if not entries or embed is None:
+        return []
+
+    try:
+        query_vec = embed([headline])[0]
+    except Exception:
+        return []
+
+    matrix = np.stack([e.vector for e in entries])
+    scores = matrix @ query_vec
+
+    ranked_idx = np.argsort(-scores)
+    results = []
+    for idx in ranked_idx:
+        sim = float(scores[idx])
+        if sim < threshold:
+            break
+        if len(results) >= top_k:
+            break
+        results.append(MarketMatch(
+            market=entries[idx].market,
+            similarity=sim,
+            match_method="semantic",
+        ))
+    return results
+
+
+def _keyword_match_raw(
+    headline: str,
+    markets: list[Market],
+    top_k: int,
+) -> list[MarketMatch]:
+    """Raw keyword matching, returning low-threshold results for hybrid rescoring."""
+    headline_lower = headline.lower()
+    headline_words = set(headline_lower.split())
+    scored: list[tuple[float, Market]] = []
+
+    for market in markets:
+        keywords = _extract_keywords(market.question)
+        if not keywords:
+            continue
+        hits = sum(1 for kw in keywords if kw in headline_lower)
+        if hits == 0:
+            continue
+        union = len(set(keywords) | headline_words)
+        score = hits / max(1, union) if union > 0 else 0.0
+        score = min(1.0, score + hits * 0.12)
+        scored.append((score, market))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [
+        MarketMatch(market=m, similarity=s, match_method="keyword")
+        for s, m in scored[:top_k] if s > 0
+    ]
+
+
+def _keyword_jaccard(headline_keywords: set[str], market_question: str) -> float:
+    """Jaccard similarity between headline keywords and market question keywords."""
+    if not headline_keywords:
+        return 0.0
+    market_kw = set(_extract_keywords(market_question))
+    if not market_kw:
+        return 0.0
+    intersection = len(headline_keywords & market_kw)
+    union = len(headline_keywords | market_kw)
+    return intersection / union if union > 0 else 0.0
 
 
 def _semantic_match(

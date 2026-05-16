@@ -114,12 +114,14 @@ def batch_audit(headlines: list[str], source: str = "audit",
     """Run audit on multiple headlines. Fetches markets once."""
     import config
     from ingestion.markets import fetch_active_markets, filter_by_categories
+    from signal.matcher import update_market_embeddings
 
     if markets is None:
         try:
             all_m = fetch_active_markets(limit=100)
             markets = filter_by_categories(all_m)
-            print(f"Fetched {len(markets)} markets for audit")
+            update_market_embeddings(markets)
+            print(f"Fetched {len(markets)} markets for audit (embeddings preloaded)")
         except Exception as e:
             print(f"Market fetch failed: {e}")
             markets = []
