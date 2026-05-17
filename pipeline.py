@@ -204,13 +204,17 @@ class Pipeline:
                         novelty_score=0.5,
                     )
                 trace.transition(SignalStage.NLP_PROCESSED)
-                if nlp.relevance < config.NLP_MIN_IMPACT:
+                # Gate on raw IMPACT score, not time-decayed relevance.
+                # Temporal decay reduces sizing/urgency, not signal eligibility.
+                # Without this, RSS feeds (1-6h old) are all killed by exp(-0.05*age).
+                impact_gate_value = nlp.impact_score
+                if impact_gate_value < config.NLP_MIN_IMPACT:
                     trace.reject(
                         RejectionReason.NLP_IMPACT_BELOW_THRESHOLD,
                         threshold=config.NLP_MIN_IMPACT,
-                        actual=round(nlp.relevance, 4),
+                        actual=round(impact_gate_value, 4),
                         snapshot=config.get_effective_config(),
-                        detail=f"NLP relevance {nlp.relevance:.3f} < {config.NLP_MIN_IMPACT}",
+                        detail=f"NLP impact {impact_gate_value:.3f} < {config.NLP_MIN_IMPACT}",
                     )
                     _persist_trace_safe(trace)
                     broadcaster.broadcast({
