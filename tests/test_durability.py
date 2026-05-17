@@ -152,6 +152,6 @@ class TestTaskSupervisor:
 
     def test_supervisor_initial_state(self):
         sup = TaskSupervisor()
-        assert sup._running is False
+        assert sup._running is True
         status = sup.status()
         assert status == {}

@@ -49,7 +49,7 @@ class TaskSupervisor:
 
     def __init__(self):
         self._tasks: dict[str, SupervisedTask] = {}
-        self._running = False
+        self._running = True
 
     def register(self, name: str, coroutine_fn, stall_threshold: float = 300.0,
                  max_restarts: int = 5) -> SupervisedTask:
