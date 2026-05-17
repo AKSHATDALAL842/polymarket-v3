@@ -1,6 +1,6 @@
 import usePolling from '../hooks/usePolling.js'
 
-const API = ''
+const API = '/api'
 
 function fmt(n) {
   if (n == null) return '—'

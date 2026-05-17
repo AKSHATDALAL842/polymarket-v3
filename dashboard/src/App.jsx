@@ -14,7 +14,7 @@ import useWebSocket       from './hooks/useWebSocket.js'
 import usePolling         from './hooks/usePolling.js'
 
 const WS_URL  = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/signals`
-const API     = ''
+const API     = '/api'
 
 const TABS = [
   { id: 'terminal',  label: 'Terminal' },
