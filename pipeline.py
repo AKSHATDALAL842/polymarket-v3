@@ -72,6 +72,16 @@ class Pipeline:
         from observability.broadcaster import start_heartbeat
         start_heartbeat(self)
 
+        from execution.task_supervisor import get_task_supervisor
+        from execution.reconciliation import get_reconciliation_engine
+        from execution.settlement import get_settlement_engine
+        from execution.market_sync import get_market_synchronizer
+
+        supervisor = get_task_supervisor()
+        supervisor.register("reconciliation", get_reconciliation_engine().run, stall_threshold=600)
+        supervisor.register("settlement", get_settlement_engine().run, stall_threshold=600)
+        supervisor.register("market_sync", get_market_synchronizer().run, stall_threshold=600)
+
         bg_tasks = [
             asyncio.create_task(self.watcher.run(), name="watcher"),
             asyncio.create_task(self._news_aggregator.run(), name="news_aggregator"),
@@ -79,6 +89,16 @@ class Pipeline:
             asyncio.create_task(self._momentum_alpha.run(self.watcher), name="momentum_alpha"),
             asyncio.create_task(self._cold_path.run(), name="cold_path"),
             asyncio.create_task(self._health_monitor.run(), name="health_monitor"),
+            asyncio.create_task(
+                get_reconciliation_engine().run(self), name="reconciliation",
+            ),
+            asyncio.create_task(
+                get_settlement_engine().run(self), name="settlement",
+            ),
+            asyncio.create_task(
+                get_market_synchronizer().run(self), name="market_sync",
+            ),
+            asyncio.create_task(supervisor.monitor_loop(), name="task_monitor"),
         ]
         shutdown_waiter = asyncio.create_task(self._shutdown.wait(), name="shutdown_waiter")
 
