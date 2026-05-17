@@ -121,9 +121,9 @@ def _execute_live(signal: Signal, exec_start: float) -> ExecutionResult:
     try:
         client = ClobClient(
             host=config.POLYMARKET_HOST,
-            key=config.POLYMARKET_API_KEY,
+            key="0x" + config.POLYMARKET_PRIVATE_KEY,
             chain_id=137,
-            funder=config.POLYMARKET_PRIVATE_KEY,
+            funder="0x" + config.POLYMARKET_PRIVATE_KEY,
         )
         client.set_api_creds(client.create_or_derive_api_creds())
     except Exception as e:
