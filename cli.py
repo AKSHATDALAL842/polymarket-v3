@@ -503,6 +503,71 @@ def cmd_attrition(args):
     print_waterfall(report)
 
 
+def cmd_review_queue(args):
+    """Signal quality review queue management."""
+    from observability.signal_review import get_review_queue, SignalLabel
+
+    queue = get_review_queue()
+
+    if args.label:
+        parts = args.label.split("=", 1)
+        if len(parts) == 2:
+            trace_id, label = parts
+            if label not in [l.value for l in SignalLabel]:
+                console.print(f"[red]Invalid label: {label}[/red]")
+                console.print(f"Valid labels: {[l.value for l in SignalLabel]}")
+                return
+            ok = queue.label(trace_id.strip(), label.strip(), args.notes)
+            if ok:
+                console.print(f"[green]Labeled {trace_id} as {label}[/green]")
+            else:
+                console.print(f"[red]Trace {trace_id} not found in review queue[/red]")
+        else:
+            console.print("[red]Format: --label TRACE_ID=LABEL[/red]")
+        return
+
+    if args.stats:
+        stats = queue.stats()
+        console.print(f"\n[bold]REVIEW QUEUE STATISTICS[/bold]")
+        console.print(f"  Total captured: {stats['total_captured']}")
+        console.print(f"  Pending review: {stats['pending_review']}")
+        console.print(f"  Reviewed: {stats['reviewed']}")
+        console.print(f"  Sample rate: {stats['sample_rate']:.0%}")
+        if stats['labels']:
+            console.print(f"\n  [bold]Label distribution:[/bold]")
+            for label, count in sorted(stats['labels'].items(), key=lambda x: -x[1]):
+                console.print(f"    {label}: {count}")
+        return
+
+    # Show pending reviews
+    n = args.n if not args.pending else 50
+    reviews = queue.get_pending(n=n) if args.pending else queue.get_pending(n=n)
+
+    if not reviews:
+        console.print("[yellow]No pending reviews. Run the pipeline to capture signals.[/yellow]")
+        return
+
+    console.print(f"\n[bold]SIGNAL REVIEW QUEUE[/bold] ({len(reviews)} pending)")
+    for i, r in enumerate(reviews):
+        console.print(f"\n[bold cyan]#{i+1}[/bold cyan] [{r.source}] {r.headline[:80]}")
+        console.print(f"  Trace: {r.trace_id}")
+        if r.extracted_entities:
+            console.print(f"  Entities: {', '.join(r.extracted_entities[:8])}")
+        console.print(f"  Matched: [{r.market_id[:20]}] {r.matched_market[:80]}")
+        console.print(f"  Similarity: {r.similarity:.4f}")
+        if r.score_breakdown:
+            sb = r.score_breakdown
+            console.print(f"  Score: sem={sb.get('semantic',0):.3f} entity={sb.get('entity_overlap',0):.3f} "
+                          f"kw={sb.get('keyword_overlap',0):.3f} → hybrid={sb.get('hybrid',0):.3f}")
+        if r.rejection_reason:
+            console.print(f"  [red]Rejected: {r.rejection_reason}[/red]")
+        if r.alternative_markets:
+            console.print(f"  Alternatives: {len(r.alternative_markets)}")
+        console.print(f"  [dim]Label: python cli.py review-queue --label {r.trace_id}=CORRECT_MATCH[/dim]")
+
+    console.print(f"\n[dim]Valid labels: {[l.value for l in SignalLabel]}[/dim]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Pipeline V3")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG log output")
@@ -565,6 +630,14 @@ def main():
     p_attrition.add_argument("--window", type=int, default=24, help="Hours of trace history (default: 24)")
     p_attrition.add_argument("--synthetic", type=int, default=None, help="Generate N synthetic traces for testing")
     p_attrition.set_defaults(func=cmd_attrition)
+
+    p_review = sub.add_parser("review-queue", help="Signal quality review queue — inspect and label sampled signals")
+    p_review.add_argument("--label", type=str, default=None, help="Label a trace_id (format: TRACE_ID=LABEL)")
+    p_review.add_argument("--notes", type=str, default=None, help="Reviewer notes")
+    p_review.add_argument("--pending", action="store_true", help="Show pending (unlabeled) reviews")
+    p_review.add_argument("--stats", action="store_true", help="Show review queue statistics")
+    p_review.add_argument("--n", type=int, default=10, help="Number of reviews to show")
+    p_review.set_defaults(func=cmd_review_queue)
 
     args = parser.parse_args()
     if not args.command:
