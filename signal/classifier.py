@@ -249,11 +249,28 @@ async def classify_async(
     client = _get_client()
     wall_start = time.monotonic()
 
-    tasks = [_single_pass(client, headline, market, source) for _ in range(n)]
-    passes = await asyncio.gather(*tasks, return_exceptions=False)
+    # Run passes sequentially so the rate limiter (token bucket + semaphore)
+    # can properly gate each call. Concurrent passes would all fire at once
+    # and only the first gets through before Groq rate-limits the others.
+    passes = []
+    for _ in range(n):
+        passes.append(await _single_pass(client, headline, market, source))
 
     valid = [p for p in passes if not p.error]
     if not valid:
+        # All LLM passes failed (rate-limited, timeout, etc.).
+        # Fall back to rule-based classifier so the pipeline isn't dead.
+        from signal.fast_classifier import predict as _rule_predict, build_classification as _rule_build
+        try:
+            fast = _rule_predict(headline=headline, source=source,
+                                 market_yes_price=market.yes_price)
+            fallback = _rule_build(fast)
+            fallback.total_latency_ms = int((time.monotonic() - wall_start) * 1000)
+            fallback.passes = list(passes)
+            fallback.model = "rule_fallback"
+            return fallback
+        except Exception:
+            pass
         return Classification(
             direction="NEUTRAL",
             confidence=0.0,
@@ -269,7 +286,9 @@ async def classify_async(
 
     direction_counts = Counter(p.direction for p in valid)
     majority_direction, majority_count = direction_counts.most_common(1)[0]
-    consistency = majority_count / n
+    # Consistency computed over valid passes only — errored/timeout passes
+    # excluded so rate-limited calls don't artificially drop consistency.
+    consistency = majority_count / len(valid) if valid else 0.0
 
     agreeing = [p for p in valid if p.direction == majority_direction]
     mean_confidence = sum(p.confidence for p in agreeing) / len(agreeing)

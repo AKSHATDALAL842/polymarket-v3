@@ -365,6 +365,10 @@ class Pipeline:
             parent_trace_id=parent_trace_id,
         )
         child_trace.context.market_id = market.condition_id
+        # Child traces inherit NLP and matching from the parent — fast-forward
+        # through those stages so SCORED is a valid transition from MARKET_MATCHED.
+        child_trace.transition(SignalStage.NLP_PROCESSED)
+        child_trace.transition(SignalStage.MARKET_MATCHED)
         timer = get_stage_timer()
 
         try:

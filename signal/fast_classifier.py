@@ -22,6 +22,10 @@ _CERTAINTY_WORDS = {
     "signed", "passed", "approved", "rejected", "wins", "won", "loses", "lost",
     "convicted", "acquitted", "indicted", "arrested", "resigns", "fired",
     "bankrupt", "launched", "released", "deployed",
+    # Financial/news certainty signals
+    "surges", "soars", "rallies", "record", "all-time", "exceeds",
+    "beats", "misses", "plunges", "crashes", "spikes", "collapses",
+    "breakthrough", "approved", "rejected", "signed",
 }
 
 _UNCERTAINTY_WORDS = {
@@ -33,11 +37,14 @@ _UNCERTAINTY_WORDS = {
 _HIGH_CRED_SOURCES = {
     "reuters", "bloomberg", "ap", "associated press", "wsj",
     "wall street journal", "ft", "financial times", "bbc", "nyt", "new york times",
+    "coindesk", "cointelegraph", "techcrunch", "ars technica",
+    "the verge", "yahoo finance", "marketwatch", "cnbc",
 }
 
 _MED_CRED_SOURCES = {
-    "cnn", "fox", "cnbc", "msnbc", "the guardian",
+    "cnn", "fox", "msnbc", "the guardian",
     "washington post", "politico", "axios", "the hill",
+    "benzinga", "business insider", "fortune", "forbes",
 }
 
 
@@ -178,7 +185,7 @@ def _rule_based(headline: str, source: str) -> ClassifierResult:
         return ClassifierResult(direction="NEUTRAL", confidence=0.0, materiality=0.0,
                                 method="rule_based", latency_ms=0)
 
-    confidence = min(0.80, hit.confidence * src_cred * 1.1)
+    confidence = max(0.55, min(0.82, hit.confidence * max(0.40, src_cred) * 1.4))
     materiality = min(0.80, score * 0.70)
     return ClassifierResult(direction=hit.direction, confidence=confidence,
                             materiality=materiality, method="rule_based", latency_ms=0)
