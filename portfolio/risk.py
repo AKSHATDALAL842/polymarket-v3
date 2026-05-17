@@ -143,6 +143,7 @@ class RiskManager:
         cooldown = self.in_cooldown()
         return {
             "open_positions": len(self._open_positions),
+            "total_exposure": sum(self._open_positions.values()),
             "consecutive_losses": self._consecutive_losses,
             "in_cooldown": cooldown,
             "category_exposure": dict(self._category_exposure),

@@ -374,9 +374,10 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
 
   const rejections = buildRejections()
   const executed = (trades.by_status?.executed || 0) + (trades.by_status?.paper || 0) + (trades.by_status?.dry_run || 0)
-  const capitalUsed = portfolio?.total_value || (risk.total_exposure || 0)
+  const totalExposure = risk?.total_exposure || 0
+  const portfolioValue = portfolio?.total_value || 0
   const capitalMax  = portfolio?.initial_balance || 10000
-  const capitalPct  = Math.min(100, Math.round((capitalUsed / capitalMax) * 100))
+  const capitalPct  = totalExposure > 0 ? Math.min(100, Math.round((totalExposure / capitalMax) * 100)) : 0
 
   return (
     <div style={{
@@ -452,10 +453,10 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
           <SectionLabel>Active Capital</SectionLabel>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
             <span style={{ fontSize: '13px', fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--txt)' }}>
-              ${capitalUsed.toLocaleString()}
+              ${totalExposure.toLocaleString()}
             </span>
             <span style={{ fontSize: '10px', color: 'var(--txt-sub)', fontVariantNumeric: 'tabular-nums' }}>
-              / ${capitalMax.toLocaleString()}
+              exposed / ${capitalMax.toLocaleString()} available
             </span>
           </div>
           <div style={{ height: '4px', background: 'var(--border)', overflow: 'hidden' }}>
