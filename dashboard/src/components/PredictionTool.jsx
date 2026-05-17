@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 
-const API_BASE = '/api'
+const API_BASE = ''
 
 export default function PredictionTool() {
   const [query, setQuery]     = useState('')

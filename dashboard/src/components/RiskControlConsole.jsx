@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 
-const API = '/api'
+const API = ''
 
 /* ────────────────────────────────────────────
    Config key → console state mapping

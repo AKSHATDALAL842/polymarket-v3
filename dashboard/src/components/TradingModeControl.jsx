@@ -1,7 +1,7 @@
 // dashboard/src/components/TradingModeControl.jsx
 import { useState } from 'react'
 
-const API = '/api'
+const API = ''
 
 export default function TradingModeControl({ tradingStatus, onModeChange }) {
   const [confirming, setConfirming] = useState(false)
