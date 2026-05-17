@@ -192,7 +192,10 @@ def fetch_kalshi_markets(limit: int = 200) -> list[Market]:
 
 
 def _parse_kalshi_market(m: dict) -> Market | None:
-    """Parse one Kalshi market dict into a Market dataclass."""
+    """Parse one Kalshi market dict into a Market dataclass.
+
+    Handles both dollar-format API (demo) and cent-format API (production).
+    """
     try:
         ticker = m.get("ticker", "")
         if not ticker:
@@ -205,17 +208,33 @@ def _parse_kalshi_market(m: dict) -> Market | None:
         title = m.get("title", m.get("subtitle", ticker))
         kalshi_cat = m.get("category", "")
 
-        yes_bid = m.get("yes_bid", 50)
-        yes_ask = m.get("yes_ask", 50)
-        yes_price = _cents_to_prob((yes_bid + yes_ask) / 2)
+        # Price parsing: dollar format ("0.45") or cent format (45)
+        yes_bid_dollars = m.get("yes_bid_dollars")
+        yes_ask_dollars = m.get("yes_ask_dollars")
+        if yes_bid_dollars is not None and yes_ask_dollars is not None:
+            yes_bid = float(yes_bid_dollars)
+            yes_ask = float(yes_ask_dollars)
+        else:
+            yes_bid = _cents_to_prob(m.get("yes_bid", 50))
+            yes_ask = _cents_to_prob(m.get("yes_ask", 50))
+
+        yes_price = (yes_bid + yes_ask) / 2
         no_price  = round(1.0 - yes_price, 4)
 
-        volume_contracts = float(m.get("volume", 0) or 0)
-        avg_price = yes_price * 0.5 + 0.5 * 0.5
-        volume_usd = _volume_to_usd(volume_contracts, avg_price)
+        # Volume parsing: "volume_fp" (dollar API) or "volume" (cent API)
+        volume_raw = m.get("volume_fp") or m.get("volume", 0) or 0
+        volume_contracts = float(volume_raw)
+        # For dollar API, volume_fp is already in dollar-equivalent units
+        if m.get("volume_fp") is not None:
+            volume_usd = volume_contracts
+        else:
+            avg_price = yes_price * 0.5 + 0.5 * 0.5
+            volume_usd = _volume_to_usd(volume_contracts, avg_price)
 
         end_date = m.get("close_time", m.get("expiration_time", ""))
 
+        # Only skip if both price is degenerate AND volume is zero
+        # Kalshi demo API often has zero volume — don't filter those out
         if yes_price in (0.0, 1.0) and volume_usd == 0:
             return None
 

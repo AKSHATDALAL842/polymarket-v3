@@ -169,19 +169,47 @@ def _infer_category(question: str, tags: list) -> str:
     tag_str = " ".join(str(t).lower() for t in tags)
     combined = f"{q} {tag_str}"
 
-    if any(kw in combined for kw in ["ai", "artificial intelligence", "openai", "chatgpt", "llm", "google ai", "anthropic"]):
-        return "ai"
-    if any(kw in combined for kw in ["bitcoin", "ethereum", "crypto", "blockchain", "defi", "token"]):
+    # Crypto
+    if any(kw in combined for kw in ["bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain",
+                                      "defi", "token", "solana", "xrp", "dogecoin", "stablecoin"]):
         return "crypto"
+    # Economics / macro
     if any(kw in combined for kw in ["fed", "federal reserve", "inflation", "interest rate",
-                                      "gdp", "recession", "cpi", "fomc", "treasury"]):
+                                      "gdp", "recession", "cpi", "fomc", "treasury", "unemployment",
+                                      "jobs report", "ppi", "pce", "yield", "tariff", "trade",
+                                      "central bank", "monetary", "fiscal", "debt ceiling",
+                                      "stock market", "s&p", "dow jones", "nasdaq", "dollar",
+                                      "bond", "mortgage", "oil price", "gold price"]):
         return "economics"
-    if any(kw in combined for kw in ["election", "president", "congress", "senate", "trump", "biden", "political"]):
+    # Politics
+    if any(kw in combined for kw in ["election", "president", "congress", "senate", "trump", "biden",
+                                      "political", "governor", "mayor", "prime minister", "parliament",
+                                      "vote", "ballot", "democrat", "republican", "nominee",
+                                      "cabinet", "impeach", "resign", "supreme court", "justice",
+                                      "bill passed", "legislation", "executive order", "referendum",
+                                      "minister", "coalition", "party leader"]):
         return "politics"
-    if any(kw in combined for kw in ["spacex", "nasa", "climate", "research", "study", "discovery"]):
-        return "science"
-    if any(kw in combined for kw in ["tech", "apple", "google", "microsoft", "software", "startup"]):
+    # AI / tech
+    if any(kw in combined for kw in ["ai", "artificial intelligence", "openai", "chatgpt", "llm",
+                                      "google ai", "anthropic", "gpt", "machine learning",
+                                      "deep learning", "copilot", "gemini", "mistral", "claude"]):
+        return "ai"
+    if any(kw in combined for kw in ["apple", "microsoft", "nvidia", "google", "meta", "amazon",
+                                      "tesla", "software", "startup", "semiconductor", "chip",
+                                      "iphone", "android", "cybersecurity", "hack", "data breach",
+                                      "ipo", "acquisition", "merger", "tech stock"]):
         return "technology"
+    # Science / climate
+    if any(kw in combined for kw in ["spacex", "nasa", "climate", "temperature", "hurricane",
+                                      "earthquake", "tornado", "wildfire", "flood", "drought",
+                                      "storm", "noaa", "research", "study", "discovery",
+                                      "fda", "vaccine", "clinical trial", "pharma"]):
+        return "science"
+    # Weather (sub-category of science for prediction markets)
+    if any(kw in combined for kw in ["temp ", "temperature", "°", "weather", "rainfall",
+                                      "snowfall", "precipitation", "heat"]):
+        return "science"
+
     return "other"
 
 

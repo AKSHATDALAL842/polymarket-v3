@@ -107,6 +107,53 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_positions_market_id ON positions(market_id);
         CREATE INDEX IF NOT EXISTS idx_positions_status    ON positions(status);
+
+        CREATE TABLE IF NOT EXISTS signal_traces (
+            trace_id          TEXT PRIMARY KEY,
+            parent_trace_id   TEXT,
+            headline          TEXT NOT NULL,
+            source            TEXT NOT NULL,
+            news_id           TEXT,
+            source_id         TEXT,
+            market_id         TEXT,
+            market_question   TEXT,
+            direction         TEXT,
+            final_stage       TEXT NOT NULL DEFAULT 'INGESTED',
+            final_status      TEXT NOT NULL DEFAULT 'in_progress',
+            rejection_reason  TEXT,
+            rejection_severity TEXT,
+            rejection_detail  TEXT,
+            match_trace       TEXT,
+            stage_timings     TEXT,
+            total_latency_ms  INTEGER,
+            execution_id      TEXT,
+            position_id       INTEGER,
+            schema_version    INTEGER NOT NULL DEFAULT 1,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_traces_status    ON signal_traces(final_status);
+        CREATE INDEX IF NOT EXISTS idx_traces_rejection ON signal_traces(rejection_reason);
+        CREATE INDEX IF NOT EXISTS idx_traces_severity  ON signal_traces(rejection_severity);
+        CREATE INDEX IF NOT EXISTS idx_traces_market    ON signal_traces(market_id);
+        CREATE INDEX IF NOT EXISTS idx_traces_created   ON signal_traces(created_at);
+        CREATE INDEX IF NOT EXISTS idx_traces_parent    ON signal_traces(parent_trace_id);
+
+        CREATE TABLE IF NOT EXISTS dead_letters (
+            dlq_id        TEXT PRIMARY KEY,
+            trace_id      TEXT,
+            subsystem     TEXT NOT NULL,
+            exception     TEXT NOT NULL,
+            payload       TEXT NOT NULL,
+            retry_count   INTEGER NOT NULL DEFAULT 0,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dlq_status    ON dead_letters(status);
+        CREATE INDEX IF NOT EXISTS idx_dlq_subsystem ON dead_letters(subsystem);
     """)
     _migrate_v2_columns(conn)
     conn.close()
@@ -513,6 +560,176 @@ def get_category_stats() -> dict:
             "win_rate": round(wins / count, 3) if count > 0 else 0.0,
         }
     return result
+
+
+import json as _json
+
+
+def log_trace(trace_id: str, headline: str, source: str, parent_trace_id: str | None = None,
+              news_id: str | None = None, source_id: str | None = None) -> None:
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO signal_traces (trace_id, parent_trace_id, headline, source, news_id, source_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (trace_id, parent_trace_id, headline, source, news_id, source_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_trace(trace_id: str, **kwargs) -> None:
+    if not kwargs:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [trace_id]
+    conn = _conn()
+    conn.execute(
+        f"UPDATE signal_traces SET {set_clause}, updated_at = datetime('now') WHERE trace_id = ?",
+        values,
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_dead_letter(dlq_id: str, trace_id: str | None, subsystem: str,
+                    exception: str, payload: dict) -> None:
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO dead_letters (dlq_id, trace_id, subsystem, exception, payload)
+           VALUES (?, ?, ?, ?, ?)""",
+        (dlq_id, trace_id, subsystem, exception, _json.dumps(payload)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_dead_letter(dlq_id: str, status: str) -> None:
+    conn = _conn()
+    conn.execute(
+        "UPDATE dead_letters SET status = ?, updated_at = datetime('now') WHERE dlq_id = ?",
+        (status, dlq_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_trace_by_id(trace_id: str) -> dict | None:
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM signal_traces WHERE trace_id = ?", (trace_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_recent_traces(limit: int = 50, status: str | None = None,
+                      reason: str | None = None, severity: str | None = None) -> list[dict]:
+    conn = _conn()
+    query = "SELECT * FROM signal_traces WHERE 1=1"
+    params: list = []
+    if status:
+        query += " AND final_status = ?"
+        params.append(status)
+    if reason:
+        query += " AND rejection_reason = ?"
+        params.append(reason)
+    if severity:
+        query += " AND rejection_severity = ?"
+        params.append(severity)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_recent_traces_for_heatmap(window_seconds: int = 3600) -> list[dict]:
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT * FROM signal_traces
+           WHERE created_at >= datetime('now', ? || ' seconds')
+           ORDER BY created_at DESC""",
+        (f"-{window_seconds}",),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_rejection_analytics(window_seconds: int = 3600) -> dict:
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT rejection_reason, rejection_severity, COUNT(*) as cnt
+           FROM signal_traces
+           WHERE rejection_reason IS NOT NULL
+             AND created_at >= datetime('now', ? || ' seconds')
+           GROUP BY rejection_reason, rejection_severity
+           ORDER BY cnt DESC""",
+        (f"-{window_seconds}",),
+    ).fetchall()
+    total = conn.execute(
+        """SELECT COUNT(*) as cnt FROM signal_traces
+           WHERE created_at >= datetime('now', ? || ' seconds')""",
+        (f"-{window_seconds}",),
+    ).fetchone()["cnt"]
+    conn.close()
+    return {
+        "total_signals": total,
+        "by_reason": [{"reason": r["rejection_reason"], "severity": r["rejection_severity"],
+                        "count": r["cnt"]} for r in rows],
+    }
+
+
+def get_dlq_stats() -> dict:
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT status, subsystem, COUNT(*) as cnt
+           FROM dead_letters GROUP BY status, subsystem"""
+    ).fetchall()
+    recent = conn.execute(
+        "SELECT * FROM dead_letters ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    conn.close()
+    return {
+        "by_status_subsystem": [{"status": r["status"], "subsystem": r["subsystem"],
+                                  "count": r["cnt"]} for r in rows],
+        "recent": [dict(r) for r in recent],
+    }
+
+
+def prune_signal_traces(max_rows: int = 1_000_000) -> int:
+    """Delete oldest traces beyond max_rows. Returns count deleted."""
+    conn = _conn()
+    count_row = conn.execute("SELECT COUNT(*) as cnt FROM signal_traces").fetchone()
+    total = count_row["cnt"]
+    if total <= max_rows:
+        conn.close()
+        return 0
+    excess = total - max_rows
+    conn.execute(
+        """DELETE FROM signal_traces
+           WHERE trace_id IN (
+               SELECT trace_id FROM signal_traces
+               ORDER BY created_at ASC LIMIT ?
+           )""",
+        (excess,),
+    )
+    deleted = conn.total_changes
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def prune_dead_letters(ttl_days: int = 7) -> int:
+    """Delete dead letters older than TTL. Returns count deleted."""
+    conn = _conn()
+    conn.execute(
+        "DELETE FROM dead_letters WHERE created_at < datetime('now', ? || ' days')",
+        (f"-{ttl_days}",),
+    )
+    deleted = conn.total_changes
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 init_db()

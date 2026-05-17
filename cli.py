@@ -387,6 +387,230 @@ def cmd_stats(args):
         console.print(f"    Accuracy: {cal['accuracy']:.1f}% ({cal['total']} resolved)")
 
 
+def cmd_debug_dashboard(args):
+    """Telemetry debug dashboard — visibility into signal starvation causes."""
+    from observability.logger import (
+        get_recent_traces, get_rejection_analytics, get_dlq_stats,
+    )
+    from observability.stage_timer import get_stage_timer
+    from rich.panel import Panel
+    from rich.layout import Layout
+
+    console.print(Panel("[bold bright_cyan]TELEMETRY DEBUG DASHBOARD[/bold bright_cyan]",
+                        style="bright_cyan"))
+
+    # 1. Top rejection reasons
+    analytics = get_rejection_analytics(window_seconds=86400)
+    console.print(f"\n[bold]REJECTION ANALYTICS[/bold] (24h window, {analytics['total_signals']} signals)")
+
+    if analytics["by_reason"]:
+        table = Table(show_header=True, header_style="bold red")
+        table.add_column("Reason", max_width=40)
+        table.add_column("Severity", width=14)
+        table.add_column("Count", justify="right", width=8)
+        table.add_column("Rate", justify="right", width=8)
+        total = max(1, analytics["total_signals"])
+        for r in analytics["by_reason"][:15]:
+            rate = r["count"] / total * 100
+            sev_color = {
+                "HARD_REJECT": "red", "SOFT_REJECT": "yellow",
+                "INFO": "dim white", "SYSTEM_FAILURE": "bright_red",
+            }.get(r["severity"], "white")
+            table.add_row(r["reason"], f"[{sev_color}]{r['severity']}[/{sev_color}]",
+                          str(r["count"]), f"{rate:.1f}%")
+        console.print(table)
+    else:
+        console.print("  [dim]No rejection data yet — run the pipeline first[/dim]")
+
+    # 2. Stage bottlenecks
+    console.print("\n[bold]STAGE LATENCY BOTTLENECKS[/bold]")
+    timer = get_stage_timer()
+    dists = timer.get_all_distributions()
+    if dists:
+        table = Table(show_header=True, header_style="bold yellow")
+        table.add_column("Stage", max_width=22)
+        table.add_column("p50", justify="right", width=8)
+        table.add_column("p95", justify="right", width=8)
+        table.add_column("p99", justify="right", width=8)
+        table.add_column("Count", justify="right", width=8)
+        for stage, d in sorted(dists.items(), key=lambda x: -x[1].p95_us):
+            p95_ms = d.p95_us / 1000
+            color = "red" if p95_ms > 500 else ("yellow" if p95_ms > 100 else "green")
+            table.add_row(stage,
+                          f"{d.p50_us/1000:.1f}ms",
+                          f"[{color}]{d.p95_us/1000:.1f}ms[/{color}]",
+                          f"{d.p99_us/1000:.1f}ms",
+                          str(d.count))
+        console.print(table)
+    else:
+        console.print("  [dim]No stage timing data yet[/dim]")
+
+    # 3. Market-match failures
+    console.print("\n[bold]MARKET-MATCH FAILURES[/bold]")
+    no_match = get_recent_traces(limit=200, reason="NO_MARKET_MATCHES")
+    recent_all = get_recent_traces(limit=200)
+    match_fail_rate = len(no_match) / max(1, len(recent_all)) * 100
+    console.print(f"  NO_MARKET_MATCHES: {len(no_match)} of {len(recent_all)} "
+                  f"recent traces ([red]{match_fail_rate:.1f}%[/red])")
+    if no_match:
+        console.print(f"  [dim]Sample headlines with no market match:[/dim]")
+        for t in no_match[:5]:
+            console.print(f"    - {t['headline'][:80]}")
+
+    # 4. Queue saturation
+    console.print("\n[bold]QUEUE SATURATION[/bold]")
+    console.print(f"  [dim]Run with --watch to see live queue depths via /debug/queues[/dim]")
+
+    # 5. Zero-signal windows
+    console.print("\n[bold]ZERO-SIGNAL WINDOWS[/bold]")
+    if recent_all:
+        from datetime import datetime, timezone
+        times = [t.get("created_at", "") for t in recent_all]
+        times = [t for t in times if t]
+        if len(times) >= 2:
+            console.print(f"  First signal: {times[-1][:19]}")
+            console.print(f"  Latest signal: {times[0][:19]}")
+            console.print(f"  Total signals: {len(recent_all)}")
+    else:
+        console.print("  [yellow bold]No signals in recent trace history[/yellow bold]")
+        console.print("  [dim]This indicates either:[/dim]")
+        console.print("  [dim]  - Pipeline has not been started[/dim]")
+        console.print("  [dim]  - All signals are being filtered before reaching the ingestor[/dim]")
+        console.print("  [dim]  - The news queue is starved[/dim]")
+
+    # 6. Dead-letter spikes
+    dlq_stats = get_dlq_stats()
+    console.print("\n[bold]DEAD-LETTER QUEUE[/bold]")
+    dlq_total = sum(r["count"] for r in dlq_stats["by_status_subsystem"])
+    if dlq_total > 0:
+        console.print(f"  [red]Total DLQ entries: {dlq_total}[/red]")
+        for r in dlq_stats["by_status_subsystem"]:
+            console.print(f"  {r['subsystem']} ({r['status']}): {r['count']}")
+    else:
+        console.print("  [green]No dead-letter entries[/green]")
+
+    # Summary
+    console.print(f"\n[dim]Run:  python cli.py debug-dashboard --live  for live refresh[/dim]")
+    console.print(f"[dim]       curl localhost:8000/debug/heatmap | python -m json.tool[/dim]")
+
+
+def cmd_attrition(args):
+    from observability.signal_attrition import compute_attrition, print_waterfall, generate_synthetic_traces
+    if args.synthetic:
+        generate_synthetic_traces(args.synthetic)
+        console.print(f"[green]Generated {args.synthetic} synthetic traces[/green]\n")
+    report = compute_attrition(window_hours=args.window)
+    print_waterfall(report)
+
+
+def cmd_hard_stop(args):
+    """EMERGENCY: immediately halt all execution."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    safety.hard_stop(args.reason)
+    console.print(f"[red bold]HARD STOP ENGAGED: {args.reason}[/red bold]")
+    console.print("[yellow]All execution frozen. State dumped to disk.[/yellow]")
+    console.print("[dim]To resume: rm .hard_stop[/dim]")
+
+
+def cmd_preflight(args):
+    """Run pre-flight validation checks before live trading."""
+    from execution.live_safety import get_live_safety, PreflightStatus
+    from rich.panel import Panel
+
+    safety = get_live_safety()
+    report = safety.run_preflight()
+
+    if report.all_pass:
+        console.print(Panel("[bright_green bold]ALL PRE-FLIGHT CHECKS PASSED[/bright_green bold]",
+                            style="bright_green"))
+    else:
+        console.print(Panel("[red bold]PRE-FLIGHT CHECKS FAILED[/red bold]", style="red"))
+
+    for check in report.checks:
+        icon = {"pass": "[green]PASS[/green]", "warn": "[yellow]WARN[/yellow]",
+                "fail": "[red]FAIL[/red]"}.get(check.status.value, "?")
+        console.print(f"  {icon} {check.name}: {check.detail} ({check.latency_ms}ms)")
+
+    if report.failures:
+        console.print(f"\n[red bold]ABORT: {len(report.failures)} checks failed. Do not start live trading.[/red bold]")
+    elif report.warnings:
+        console.print(f"\n[yellow]{len(report.warnings)} warnings. Review before proceeding.[/yellow]")
+    else:
+        console.print(f"\n[green]System ready for live-capital validation.[/green]")
+
+
+def cmd_soak_report(args):
+    from observability.soak_report import generate_soak_report, print_soak_report
+    report = generate_soak_report()
+    print_soak_report(report)
+
+
+def cmd_review_queue(args):
+    """Signal quality review queue management."""
+    from observability.signal_review import get_review_queue, SignalLabel
+
+    queue = get_review_queue()
+
+    if args.label:
+        parts = args.label.split("=", 1)
+        if len(parts) == 2:
+            trace_id, label = parts
+            if label not in [l.value for l in SignalLabel]:
+                console.print(f"[red]Invalid label: {label}[/red]")
+                console.print(f"Valid labels: {[l.value for l in SignalLabel]}")
+                return
+            ok = queue.label(trace_id.strip(), label.strip(), args.notes)
+            if ok:
+                console.print(f"[green]Labeled {trace_id} as {label}[/green]")
+            else:
+                console.print(f"[red]Trace {trace_id} not found in review queue[/red]")
+        else:
+            console.print("[red]Format: --label TRACE_ID=LABEL[/red]")
+        return
+
+    if args.stats:
+        stats = queue.stats()
+        console.print(f"\n[bold]REVIEW QUEUE STATISTICS[/bold]")
+        console.print(f"  Total captured: {stats['total_captured']}")
+        console.print(f"  Pending review: {stats['pending_review']}")
+        console.print(f"  Reviewed: {stats['reviewed']}")
+        console.print(f"  Sample rate: {stats['sample_rate']:.0%}")
+        if stats['labels']:
+            console.print(f"\n  [bold]Label distribution:[/bold]")
+            for label, count in sorted(stats['labels'].items(), key=lambda x: -x[1]):
+                console.print(f"    {label}: {count}")
+        return
+
+    # Show pending reviews
+    n = args.n if not args.pending else 50
+    reviews = queue.get_pending(n=n) if args.pending else queue.get_pending(n=n)
+
+    if not reviews:
+        console.print("[yellow]No pending reviews. Run the pipeline to capture signals.[/yellow]")
+        return
+
+    console.print(f"\n[bold]SIGNAL REVIEW QUEUE[/bold] ({len(reviews)} pending)")
+    for i, r in enumerate(reviews):
+        console.print(f"\n[bold cyan]#{i+1}[/bold cyan] [{r.source}] {r.headline[:80]}")
+        console.print(f"  Trace: {r.trace_id}")
+        if r.extracted_entities:
+            console.print(f"  Entities: {', '.join(r.extracted_entities[:8])}")
+        console.print(f"  Matched: [{r.market_id[:20]}] {r.matched_market[:80]}")
+        console.print(f"  Similarity: {r.similarity:.4f}")
+        if r.score_breakdown:
+            sb = r.score_breakdown
+            console.print(f"  Score: sem={sb.get('semantic',0):.3f} entity={sb.get('entity_overlap',0):.3f} "
+                          f"kw={sb.get('keyword_overlap',0):.3f} → hybrid={sb.get('hybrid',0):.3f}")
+        if r.rejection_reason:
+            console.print(f"  [red]Rejected: {r.rejection_reason}[/red]")
+        if r.alternative_markets:
+            console.print(f"  Alternatives: {len(r.alternative_markets)}")
+        console.print(f"  [dim]Label: python cli.py review-queue --label {r.trace_id}=CORRECT_MATCH[/dim]")
+
+    console.print(f"\n[dim]Valid labels: {[l.value for l in SignalLabel]}[/dim]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Pipeline V3")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG log output")
@@ -441,6 +665,32 @@ def main():
     p_stats = sub.add_parser("stats", help="Performance statistics")
     p_stats.add_argument("--since", type=str, default=None, help="ISO date filter (e.g. 2026-05-01)")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_debug = sub.add_parser("debug-dashboard", help="Telemetry debug dashboard — rejection reasons, bottlenecks, DLQ")
+    p_debug.set_defaults(func=cmd_debug_dashboard)
+
+    p_attrition = sub.add_parser("signal-attrition", help="Signal attrition waterfall — stage-by-stage drop-off rates")
+    p_attrition.add_argument("--window", type=int, default=24, help="Hours of trace history (default: 24)")
+    p_attrition.add_argument("--synthetic", type=int, default=None, help="Generate N synthetic traces for testing")
+    p_attrition.set_defaults(func=cmd_attrition)
+
+    p_hardstop = sub.add_parser("hard-stop", help="EMERGENCY: immediately halt all execution")
+    p_hardstop.add_argument("reason", nargs="?", default="manual", help="Reason for hard stop")
+    p_hardstop.set_defaults(func=cmd_hard_stop)
+
+    p_preflight = sub.add_parser("preflight", help="Run pre-flight validation before live trading")
+    p_preflight.set_defaults(func=cmd_preflight)
+
+    p_soak = sub.add_parser("soak-report", help="Post-soak analysis — operational health and live-capital readiness")
+    p_soak.set_defaults(func=cmd_soak_report)
+
+    p_review = sub.add_parser("review-queue", help="Signal quality review queue — inspect and label sampled signals")
+    p_review.add_argument("--label", type=str, default=None, help="Label a trace_id (format: TRACE_ID=LABEL)")
+    p_review.add_argument("--notes", type=str, default=None, help="Reviewer notes")
+    p_review.add_argument("--pending", action="store_true", help="Show pending (unlabeled) reviews")
+    p_review.add_argument("--stats", action="store_true", help="Show review queue statistics")
+    p_review.add_argument("--n", type=int, default=10, help="Number of reviews to show")
+    p_review.set_defaults(func=cmd_review_queue)
 
     args = parser.parse_args()
     if not args.command:

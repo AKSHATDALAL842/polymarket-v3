@@ -374,9 +374,10 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
 
   const rejections = buildRejections()
   const executed = (trades.by_status?.executed || 0) + (trades.by_status?.paper || 0) + (trades.by_status?.dry_run || 0)
-  const capitalUsed = risk.total_exposure || 4200
-  const capitalMax  = 10000
-  const capitalPct  = Math.min(100, Math.round((capitalUsed / capitalMax) * 100))
+  const totalExposure = risk?.total_exposure || 0
+  const portfolioValue = portfolio?.total_value || 0
+  const capitalMax  = portfolio?.initial_balance || 10000
+  const capitalPct  = totalExposure > 0 ? Math.min(100, Math.round((totalExposure / capitalMax) * 100)) : 0
 
   return (
     <div style={{
@@ -452,10 +453,10 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
           <SectionLabel>Active Capital</SectionLabel>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
             <span style={{ fontSize: '13px', fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--txt)' }}>
-              ${capitalUsed.toLocaleString()}
+              ${totalExposure.toLocaleString()}
             </span>
             <span style={{ fontSize: '10px', color: 'var(--txt-sub)', fontVariantNumeric: 'tabular-nums' }}>
-              / ${capitalMax.toLocaleString()}
+              exposed / ${capitalMax.toLocaleString()} available
             </span>
           </div>
           <div style={{ height: '4px', background: 'var(--border)', overflow: 'hidden' }}>
@@ -496,14 +497,16 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
         {/* ── Exposure Heatmap ── */}
         <div>
           <SectionLabel>Category Exposure</SectionLabel>
-          {[
-            { label: 'POLITICS', pct: 34, color: 'var(--red)' },
-            { label: 'CRYPTO',   pct: 22, color: 'var(--amber)' },
-            { label: 'TECH',     pct: 18, color: 'var(--blue)' },
-            { label: 'MACRO',    pct: 16, color: 'var(--purple)' },
-            { label: 'SCIENCE',  pct: 6,  color: 'var(--green)' },
-            { label: 'SPORTS',   pct: 4,  color: 'var(--txt-sub)' },
-          ].map(e => (
+          {(Object.entries(risk?.category_exposure || {}).length > 0
+            ? Object.entries(risk.category_exposure).slice(0, 6).map(([cat, exp]) => ({
+                label: cat.toUpperCase(),
+                pct: Math.min(100, Math.round((exp / (dailyExposure || 100)) * 100)),
+                color: exp > (dailyExposure || 100) * 0.6 ? 'var(--red)' : 'var(--amber)'
+              }))
+            : [
+                { label: 'NO DATA', pct: 0, color: 'var(--txt-mute)' },
+              ]
+          ).map(e => (
             <ExposureBar key={e.label} {...e} />
           ))}
         </div>
@@ -526,10 +529,25 @@ export default function RiskControlConsole({ status, stats, tradingStatus, portf
               Switching mode...
             </div>
           )}
-          <Toggle label="Auto Execute"     value={autoExecute} onChange={setAutoExecute} />
+          <div style={{ opacity: 0.5 }}>
+            <Toggle label="Auto Execute (Manual Only)" value={autoExecute} onChange={setAutoExecute} disabled={true} />
+          </div>
+          <div style={{ fontSize: '7px', color: 'var(--txt-mute)', marginTop: '-6px', marginBottom: '4px', fontFamily: '"Barlow Condensed"', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            Phase 1 — manual approval required
+          </div>
           <div style={{ marginTop: '8px' }}>
             <button
-              onClick={() => setKillSwitch(!killSwitch)}
+              onClick={() => {
+                if (!killSwitch) {
+                  fetch(`${API}/live/hard-stop?reason=console_kill_switch`, { method: 'POST' })
+                    .then(() => setKillSwitch(true))
+                    .catch(() => setKillSwitch(true))
+                } else {
+                  fetch(`${API}/live/clear-stop`, { method: 'POST' })
+                    .then(() => setKillSwitch(false))
+                    .catch(() => setKillSwitch(false))
+                }
+              }}
               style={{
                 width: '100%', padding: '6px 0',
                 fontFamily: '"Barlow Condensed"', fontSize: '11px', fontWeight: 700,
