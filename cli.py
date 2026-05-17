@@ -503,6 +503,12 @@ def cmd_attrition(args):
     print_waterfall(report)
 
 
+def cmd_soak_report(args):
+    from observability.soak_report import generate_soak_report, print_soak_report
+    report = generate_soak_report()
+    print_soak_report(report)
+
+
 def cmd_review_queue(args):
     """Signal quality review queue management."""
     from observability.signal_review import get_review_queue, SignalLabel
@@ -630,6 +636,9 @@ def main():
     p_attrition.add_argument("--window", type=int, default=24, help="Hours of trace history (default: 24)")
     p_attrition.add_argument("--synthetic", type=int, default=None, help="Generate N synthetic traces for testing")
     p_attrition.set_defaults(func=cmd_attrition)
+
+    p_soak = sub.add_parser("soak-report", help="Post-soak analysis — operational health and live-capital readiness")
+    p_soak.set_defaults(func=cmd_soak_report)
 
     p_review = sub.add_parser("review-queue", help="Signal quality review queue — inspect and label sampled signals")
     p_review.add_argument("--label", type=str, default=None, help="Label a trace_id (format: TRACE_ID=LABEL)")

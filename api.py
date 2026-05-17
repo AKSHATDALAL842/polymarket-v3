@@ -573,6 +573,26 @@ async def debug_health(
     return pipeline._health_monitor.status()
 
 
+@app.get("/debug/supervisor")
+async def debug_supervisor(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    from execution.task_supervisor import get_task_supervisor
+    from execution.reconciliation import get_reconciliation_engine
+    from execution.settlement import get_settlement_engine
+    from execution.market_sync import get_market_synchronizer
+    from execution.circuit_breakers import get_circuit_breakers
+    return {
+        "tasks": get_task_supervisor().status(),
+        "reconciliation": get_reconciliation_engine().status(),
+        "settlement": get_settlement_engine().status(),
+        "market_sync": get_market_synchronizer().status(),
+        "circuit_breakers": get_circuit_breakers().status(),
+        "risk_accounting": pipeline.risk.status() if hasattr(pipeline, 'risk') else {},
+    }
+
+
 @app.websocket("/ws/debug")
 async def ws_debug(websocket: WebSocket):
     from observability import broadcaster
