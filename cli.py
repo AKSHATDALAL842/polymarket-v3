@@ -503,6 +503,43 @@ def cmd_attrition(args):
     print_waterfall(report)
 
 
+def cmd_hard_stop(args):
+    """EMERGENCY: immediately halt all execution."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    safety.hard_stop(args.reason)
+    console.print(f"[red bold]HARD STOP ENGAGED: {args.reason}[/red bold]")
+    console.print("[yellow]All execution frozen. State dumped to disk.[/yellow]")
+    console.print("[dim]To resume: rm .hard_stop[/dim]")
+
+
+def cmd_preflight(args):
+    """Run pre-flight validation checks before live trading."""
+    from execution.live_safety import get_live_safety, PreflightStatus
+    from rich.panel import Panel
+
+    safety = get_live_safety()
+    report = safety.run_preflight()
+
+    if report.all_pass:
+        console.print(Panel("[bright_green bold]ALL PRE-FLIGHT CHECKS PASSED[/bright_green bold]",
+                            style="bright_green"))
+    else:
+        console.print(Panel("[red bold]PRE-FLIGHT CHECKS FAILED[/red bold]", style="red"))
+
+    for check in report.checks:
+        icon = {"pass": "[green]PASS[/green]", "warn": "[yellow]WARN[/yellow]",
+                "fail": "[red]FAIL[/red]"}.get(check.status.value, "?")
+        console.print(f"  {icon} {check.name}: {check.detail} ({check.latency_ms}ms)")
+
+    if report.failures:
+        console.print(f"\n[red bold]ABORT: {len(report.failures)} checks failed. Do not start live trading.[/red bold]")
+    elif report.warnings:
+        console.print(f"\n[yellow]{len(report.warnings)} warnings. Review before proceeding.[/yellow]")
+    else:
+        console.print(f"\n[green]System ready for live-capital validation.[/green]")
+
+
 def cmd_soak_report(args):
     from observability.soak_report import generate_soak_report, print_soak_report
     report = generate_soak_report()
@@ -636,6 +673,13 @@ def main():
     p_attrition.add_argument("--window", type=int, default=24, help="Hours of trace history (default: 24)")
     p_attrition.add_argument("--synthetic", type=int, default=None, help="Generate N synthetic traces for testing")
     p_attrition.set_defaults(func=cmd_attrition)
+
+    p_hardstop = sub.add_parser("hard-stop", help="EMERGENCY: immediately halt all execution")
+    p_hardstop.add_argument("reason", nargs="?", default="manual", help="Reason for hard stop")
+    p_hardstop.set_defaults(func=cmd_hard_stop)
+
+    p_preflight = sub.add_parser("preflight", help="Run pre-flight validation before live trading")
+    p_preflight.set_defaults(func=cmd_preflight)
 
     p_soak = sub.add_parser("soak-report", help="Post-soak analysis — operational health and live-capital readiness")
     p_soak.set_defaults(func=cmd_soak_report)

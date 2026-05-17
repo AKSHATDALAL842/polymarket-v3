@@ -25,6 +25,7 @@ from observability.tracer import (
 from observability.rejection import RejectionReason
 from observability.stage_timer import get_stage_timer
 from observability.health_monitor import HealthMonitor
+from execution.live_safety import get_live_safety, LIVE_CONSTRAINTS
 from alpha.momentum_alpha import MomentumAlpha
 from alpha.news_alpha import NewsAlpha
 from alpha.ensemble import combine
@@ -153,6 +154,12 @@ class Pipeline:
     async def _handle_event(self, event: NewsEvent):
         if self._shutdown.is_set():
             return
+
+        # Live safety gate — hard stop check
+        safety = get_live_safety()
+        if safety.is_hard_stopped():
+            return
+
         t0 = time.monotonic()
         self._event_count += 1
 
@@ -541,6 +548,30 @@ class Pipeline:
                 all_alpha_sigs.append(momentum_sig)
 
             aggregated = combine(all_alpha_sigs)
+
+            # Live safety gate: check constraints before execution
+            if not config.DRY_RUN:
+                safety = get_live_safety()
+                can_trade, reason = safety.can_trade()
+                if not can_trade:
+                    log.warning("[pipeline] Live safety blocked: %s", reason)
+                    child_trace.reject(
+                        RejectionReason.COOLDOWN_ACTIVE,
+                        detail=f"Live safety: {reason}",
+                        snapshot=config.get_effective_config(),
+                    )
+                    _persist_trace_safe(child_trace)
+                    remove_trace(child_trace.trace_id)
+                    return
+
+                # Manual confirmation mode
+                if LIVE_CONSTRAINTS.get("MANUAL_CONFIRM", True):
+                    safety.propose_trade(child_trace, signal, market)
+                    log.warning("[pipeline] Trade proposed for manual review: %s", child_trace.trace_id)
+                    # Trade is NOT executed until approved via API or CLI
+                    remove_trace(child_trace.trace_id)
+                    return
+
             result = await PortfolioManager.instance().process_signal_async(aggregated)
 
             if result.success and result.filled_size > 0:

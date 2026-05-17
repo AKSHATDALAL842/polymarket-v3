@@ -565,7 +565,72 @@ async def debug_dlq_bury(
     raise HTTPException(status_code=404, detail=f"DLQ entry {dlq_id} not found")
 
 
-@app.get("/debug/health")
+@app.post("/live/approve")
+async def live_approve(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    """Approve the pending trade proposal for live execution."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    result = safety.approve_trade()
+    if result is None:
+        raise HTTPException(status_code=404, detail="No pending trade to approve")
+    return result
+
+
+@app.post("/live/reject")
+async def live_reject(
+    reason: str = Query(default="manual_rejection"),
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    """Reject the pending trade proposal."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    result = safety.reject_trade(reason)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No pending trade to reject")
+    return result
+
+
+@app.get("/live/pending")
+async def live_pending(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    """View the pending trade proposal awaiting approval."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    if safety._pending_approval is None:
+        return {"status": "no_pending_trade"}
+    return safety._pending_approval
+
+
+@app.post("/live/hard-stop")
+async def live_hard_stop(
+    reason: str = Query(default="api_triggered"),
+    _auth=Depends(_require_auth),
+):
+    """EMERGENCY: immediately halt all execution."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    safety.hard_stop(reason)
+    return {"status": "hard_stop_engaged", "reason": reason}
+
+
+@app.post("/live/clear-stop")
+async def live_clear_stop(
+    _auth=Depends(_require_auth),
+):
+    """Clear hard stop after investigation."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    safety.clear_hard_stop()
+    return {"status": "hard_stop_cleared"}
+
+
+@app.get("/health")
 async def debug_health(
     pipeline=Depends(_get_pipeline),
     _auth=Depends(_require_auth),
