@@ -602,9 +602,24 @@ async def live_pending(
     """View the pending trade proposal awaiting approval."""
     from execution.live_safety import get_live_safety
     safety = get_live_safety()
+    # Check for expiry
+    expired = safety.check_proposal_expiry()
+    if expired:
+        return {"status": "expired", "reason": expired}
     if safety._pending_approval is None:
         return {"status": "no_pending_trade"}
     return safety._pending_approval
+
+
+@app.get("/live/snapshot")
+async def live_snapshot(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    """Capture a complete runtime snapshot for postmortem."""
+    from execution.live_safety import get_live_safety
+    safety = get_live_safety()
+    return safety.snapshot_runtime(pipeline)
 
 
 @app.post("/live/hard-stop")

@@ -31,6 +31,8 @@ LIVE_CONSTRAINTS = {
     "MAX_TRADES_PER_DAY": 3,
     "MANUAL_CONFIRM": True,
     "RECONCILIATION_INTERVAL": 60,
+    "PROPOSAL_EXPIRY_SECONDS": 300,   # 5 minutes
+    "ALLOW_ONLY_ONE_PENDING": True,
 }
 
 HARD_STOP_FILE = os.path.join(os.path.dirname(__file__), "..", ".hard_stop")
@@ -295,8 +297,31 @@ class LiveSafetyGuard:
 
     # ── Manual confirmation ──────────────────────────────────────────────
 
-    def propose_trade(self, trace, signal, market) -> dict:
-        """Propose a trade for manual review. Returns approval payload."""
+    def propose_trade(self, trace, signal, market) -> dict | None:
+        """Propose a trade for manual review. Returns approval payload or None if blocked."""
+        # Approval locking: only one pending at a time
+        if LIVE_CONSTRAINTS.get("ALLOW_ONLY_ONE_PENDING", True):
+            if self._pending_approval is not None:
+                # Check if existing proposal is expired
+                existing_time = self._pending_approval.get("proposed_at", "")
+                if existing_time:
+                    try:
+                        proposed_dt = datetime.fromisoformat(existing_time)
+                        age = (datetime.now(timezone.utc) - proposed_dt).total_seconds()
+                        expiry = LIVE_CONSTRAINTS.get("PROPOSAL_EXPIRY_SECONDS", 300)
+                        if age > expiry:
+                            log.warning("[live_safety] Previous proposal expired (%.0fs > %ds), replacing",
+                                        age, expiry)
+                            self._pending_approval = None
+                        else:
+                            log.warning("[live_safety] Already have a pending proposal — skipping")
+                            return None
+                    except (ValueError, TypeError):
+                        self._pending_approval = None
+                else:
+                    log.warning("[live_safety] Already have a pending proposal — skipping")
+                    return None
+
         proposal = {
             "trace_id": trace.trace_id if hasattr(trace, 'trace_id') else 'unknown',
             "headline": trace.headline if hasattr(trace, 'headline') else '',
@@ -343,6 +368,89 @@ class LiveSafetyGuard:
             os.remove(MANUAL_APPROVAL_FILE)
         log.info("[live_safety] Trade REJECTED: %s — %s", proposal['trace_id'], reason)
         return proposal
+
+    def check_proposal_expiry(self) -> str | None:
+        """Check if the pending proposal has expired. Returns reason if expired."""
+        if self._pending_approval is None:
+            return None
+        try:
+            proposed_at = self._pending_approval.get("proposed_at", "")
+            if proposed_at:
+                proposed_dt = datetime.fromisoformat(proposed_at)
+                age = (datetime.now(timezone.utc) - proposed_dt).total_seconds()
+                expiry = LIVE_CONSTRAINTS.get("PROPOSAL_EXPIRY_SECONDS", 300)
+                if age > expiry:
+                    reason = f"Proposal expired after {age:.0f}s (limit: {expiry}s)"
+                    self._pending_approval["status"] = "expired"
+                    self._pending_approval["expired_at"] = datetime.now(timezone.utc).isoformat()
+                    self._pending_approval = None
+                    if os.path.exists(MANUAL_APPROVAL_FILE):
+                        os.remove(MANUAL_APPROVAL_FILE)
+                    log.warning("[live_safety] %s", reason)
+                    return reason
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def snapshot_runtime(self, pipeline=None) -> dict:
+        """Capture a complete runtime snapshot for postmortem analysis."""
+        snap = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "hard_stopped": self.is_hard_stopped(),
+            "trade_count_today": self._trade_count_today,
+            "has_pending_approval": self._pending_approval is not None,
+        }
+
+        # Task supervisor
+        try:
+            from execution.task_supervisor import get_task_supervisor
+            snap["tasks"] = get_task_supervisor().status()
+        except Exception:
+            snap["tasks"] = {}
+
+        # Circuit breakers
+        try:
+            from execution.circuit_breakers import get_circuit_breakers
+            snap["circuit_breakers"] = get_circuit_breakers().status()
+        except Exception:
+            snap["circuit_breakers"] = {}
+
+        # Reconciliation
+        try:
+            from execution.reconciliation import get_reconciliation_engine
+            snap["reconciliation"] = get_reconciliation_engine().status()
+        except Exception:
+            snap["reconciliation"] = {}
+
+        # Market sync
+        try:
+            from execution.market_sync import get_market_synchronizer
+            snap["market_sync"] = get_market_synchronizer().status()
+        except Exception:
+            snap["market_sync"] = {}
+
+        # Pipeline state
+        if pipeline:
+            try:
+                snap["pipeline"] = {
+                    "uptime": pipeline.status().get("uptime_seconds", 0),
+                    "signals": pipeline.status().get("signals_generated", 0),
+                    "ws_connected": pipeline.status().get("ws_connected", False),
+                    "markets_tracked": pipeline.status().get("tracked_markets", 0),
+                }
+            except Exception:
+                snap["pipeline"] = {}
+
+        # Persist
+        try:
+            snap_path = os.path.join(os.path.dirname(__file__), "..",
+                                     f".runtime_snap_{int(time.time())}.json")
+            with open(snap_path, 'w') as f:
+                json.dump(snap, f, indent=2, default=str)
+        except Exception:
+            pass
+
+        return snap
 
     def record_trade(self) -> None:
         self._trade_count_today += 1
