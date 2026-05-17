@@ -611,6 +611,20 @@ async def live_pending(
     return safety._pending_approval
 
 
+@app.get("/live/eva")
+async def live_eva(
+    pipeline=Depends(_get_pipeline),
+    _auth=Depends(_require_auth),
+):
+    """Expected vs Actual analysis — compare expectations against real exchange behavior."""
+    from observability.eva_analysis import get_eva_analyzer
+    from observability.exchange_logger import get_exchange_logger
+    return {
+        "eva": get_eva_analyzer().summary(),
+        "exchange_payloads": len(get_exchange_logger()._payloads),
+    }
+
+
 @app.get("/live/snapshot")
 async def live_snapshot(
     pipeline=Depends(_get_pipeline),
