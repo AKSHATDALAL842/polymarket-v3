@@ -252,9 +252,16 @@ async def classify_async(
     # Run passes sequentially so the rate limiter (token bucket + semaphore)
     # can properly gate each call. Concurrent passes would all fire at once
     # and only the first gets through before Groq rate-limits the others.
+    # If the first pass is rate-limited, skip remaining passes and fall back.
     passes = []
-    for _ in range(n):
-        passes.append(await _single_pass(client, headline, market, source))
+    for i in range(n):
+        p = await _single_pass(client, headline, market, source)
+        passes.append(p)
+        if p.error and i == 0:
+            # First pass rate-limited — Groq is unavailable.
+            # Skip remaining calls to avoid wasting 30s on guaranteed failures.
+            log.warning("[classifier] Groq unavailable — skipping remaining passes")
+            break
 
     valid = [p for p in passes if not p.error]
     if not valid:
