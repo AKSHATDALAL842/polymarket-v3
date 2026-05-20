@@ -12,29 +12,29 @@ Event-driven trading system for binary prediction markets. Ingests breaking news
 
 ```
                          ┌──────────────────────────┐
-                         │    7 News Sources         │
-                         │  Twitter · Telegram · RSS │
-                         │  NewsAPI · GNews · GDELT  │
-                         │  Reddit (adaptive)        │
+                         │    7 News Sources        │
+                         │  Twitter · Telegram · RSS│
+                         │  NewsAPI · GNews · GDELT │
+                         │  Reddit (adaptive)       │
                          └──────────┬───────────────┘
                                     │ NewsEvent
                                     ▼
                          ┌──────────────────────────┐
-                         │  NLP GATE                  │
-                         │  spaCy NER · VADER        │
-                         │  impact scoring · decay   │
+                         │  NLP GATE                │
+                         │  spaCy NER · VADER       │
+                         │  impact scoring · decay  │
                          └──────────┬───────────────┘
                                     │ enriched event
                                     ▼
                          ┌──────────────────────────┐
-                         │  MARKET MATCHER            │
-                         │  sentence-transformers    │
-                         │  cosine similarity · top-K│
+                         │  MARKET MATCHER          │
+                         │ sentence-transformers    │
+                         │ cosine similarity · top-K│
                          └──────────┬───────────────┘
                                     │ MarketMatch[]
                                     ▼
               ┌──────────────────────────────────────────┐
-              │  THREE-TIER CLASSIFIER                    │
+              │  THREE-TIER CLASSIFIER                   │
               │  Tier 1: Watchlist (65 phrases, <1ms)    │
               │  Tier 2: LightGBM (40 features, <1ms)    │
               │  Tier 3: 3-pass LLM vote (~300ms)        │
@@ -43,8 +43,8 @@ Event-driven trading system for binary prediction markets. Ingests breaking news
                                    │ Classification
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  EDGE MODEL                               │
-              │  Sigmoid-dampened price adjustment        │
+              │  EDGE MODEL                              │
+              │  Sigmoid-dampened price adjustment       │
               │  adj = room × (1 − exp(−2·raw))          │
               │  EV_net = |p_true − p_market| − slippage │
               │  Kelly sizing: K × EV × confidence × BR  │
@@ -52,34 +52,34 @@ Event-driven trading system for binary prediction markets. Ingests breaking news
                                    │ Signal
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  ALPHA + ENSEMBLE                         │
+              │  ALPHA + ENSEMBLE                        │
               │  NewsAlpha (LLM) · MomentumAlpha (BTC)   │
-              │  Weighted voting (news=0.6 mom=0.4)       │
-              │  multipliers: agreement=1.0 single=0.6     │
+              │  Weighted voting (news=0.6 mom=0.4)      │
+              │  multipliers: agreement=1.0 single=0.6   │
               └────────────────────┬─────────────────────┘
                                    │ AggregatedSignal
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  PORTFOLIO MANAGER                        │
-              │  Allocator (drawdown-scaled Kelly)        │
-              │  RiskEngine (atomic slot reservation)     │
-              │  ExecutionEngine (smart routing)          │
+              │  PORTFOLIO MANAGER                       │
+              │  Allocator (drawdown-scaled Kelly)       │
+              │  RiskEngine (atomic slot reservation)    │
+              │  ExecutionEngine (smart routing)         │
               └────────────────────┬─────────────────────┘
                                    │
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  EXECUTION                                │
-              │  Polymarket CLOB ←→ Kalshi REST           │
-              │  Limit orders · retry (3x) · slippage gate│
+              │  EXECUTION                               │
+              │  Polymarket CLOB ←→ Kalshi REST          │
+              │  Limit orders ·retry (3x) ·slippage gate │
               └────────────────────┬─────────────────────┘
                                    │ ExecutionResult
                                    ▼
               ┌──────────────────────────────────────────┐
-              │  OBSERVABILITY                            │
-              │  SQLite WAL · real-time metrics           │
-              │  Brier score · ECE calibration            │
-              │  WebSocket broadcast · FastAPI REST       │
-              │  Cold-path labeling → model retraining     │
+              │  OBSERVABILITY                           │
+              │  SQLite WAL · real-time metrics          │
+              │  Brier score · ECE calibration           │
+              │  WebSocket broadcast · FastAPI REST      │
+              │  Cold-path labeling → model retraining   │
               └──────────────────────────────────────────┘
 ```
 
