@@ -28,7 +28,7 @@ class MarketProvider(ABC):
             if watcher is None:
                 return None
             snap = watcher.get_snapshot(market_id)
-            return snap.yes_price if snap else None
+            return snap.last_price if snap else None
         except Exception:
             return None
 

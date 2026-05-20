@@ -163,7 +163,7 @@ class Portfolio:
                 continue
             snap = self._watcher.get_snapshot(market_id)
             if snap:
-                total += self.mark_to_market(market_id, snap.yes_price)
+                total += self.mark_to_market(market_id, snap.last_price)
         return total
 
     def _total_value(self) -> float:
@@ -178,7 +178,7 @@ class Portfolio:
                 continue
             if watcher:
                 snap = watcher.get_snapshot(p.market_id)
-                current_price = snap.yes_price if snap else p.entry_price
+                current_price = snap.last_price if snap else p.entry_price
             else:
                 current_price = p.entry_price
             open_positions.append({

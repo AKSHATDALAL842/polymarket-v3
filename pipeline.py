@@ -490,9 +490,9 @@ class Pipeline:
                 remove_trace(child_trace.trace_id)
                 return
 
-            if snap and config.HOT_PATH_ENABLED and hasattr(snap, "yes_price"):
+            if snap and config.HOT_PATH_ENABLED:
                 predicted_move = abs(signal.p_true - market.yes_price)
-                actual_move = abs(snap.yes_price - market.yes_price)
+                actual_move = abs(snap.last_price - market.yes_price)
                 if predicted_move > 0 and actual_move >= predicted_move * config.STALENESS_THRESHOLD:
                     child_trace.reject(
                         RejectionReason.STALENESS_ABORT,
