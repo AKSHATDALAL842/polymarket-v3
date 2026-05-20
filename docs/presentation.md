@@ -6,23 +6,42 @@
 
 ---
 
-## Slide 1: Title Slide
+## Slide 1: Title Slide (University Format)
 
-**Visual:** Dark background with the system architecture diagram (the ASCII art from README) rendered as a clean flowchart. Project name in large Times New Roman. Below it: "Event-Driven NLP Infrastructure for Autonomous Prediction Market Trading"
+**Visual:** Clean white/light background. University logo top-left. Project title centered in large Times New Roman bold. Student names, roll numbers, department, and supervisor name below. No architecture diagram — this is a formal title slide.
 
 **Content:**
-- Polymarket Signal Pipeline v3
-- Event-Driven NLP Infrastructure for Prediction Market Trading
-- Akshat Dalal & Nikhil Singhal
-- Date
+- [University Name]
+- [Department of Computer Science / Engineering]
+- **Event-Driven NLP Infrastructure for Autonomous Prediction Market Trading**
+- A Major Project Report
+- Submitted by:
+  - **Akshat Dalal** — [Roll Number]
+  - **Nikhil Singhal** — [Roll Number]
+- Under the guidance of:
+  - **[Supervisor Name]** , [Designation]
+- [Semester / Academic Year 2025-2026]
 
-**Who speaks:** Akshat — "Good morning. We built a production-grade event-driven trading infrastructure for binary prediction markets..."
+**Who speaks:** Akshat — after the title slide displays, stand up and say:
+
+> "Good morning, respected faculty. Our project is an event-driven NLP infrastructure for autonomous trading on prediction markets. Let me give you the one-sentence version: we built a system that reads breaking news from 7 sources, understands which prediction markets the news affects using hybrid semantic matching, classifies the market impact through a 3-tier AI pipeline, and simulates trades — all within 5 seconds — with full replayability, deterministic execution, and a safety framework that prevents autonomous errors from becoming financial losses. I'll walk through the backend and infrastructure; Nikhil will cover the frontend and operational dashboard."
+
+**Duration:** 30 seconds
 
 ---
 
-## Slide 2: The Problem
+## Slide 2: What This Project Is — The Big Picture
 
-**Visual:** Two-column layout. Left: "What prediction markets are" with a simple example (YES/NO contract on "Will Bitcoin exceed $100K?"). Right: "Why automation is hard" — show a news headline and the question "Which market does this affect?"
+**Visual:** A single clean diagram showing the end-to-end flow as a horizontal pipeline: News Sources → NLP → Market Matching → AI Classification → Edge Model → Execution → Dashboard. No detailed architecture — just the high-level concept. Below it, 3 bullet points with icons.
+
+**Content:**
+- **What it does:** Reads breaking news → finds related prediction markets → classifies impact → simulates trades
+- **Why it matters:** Manual traders cannot monitor 7 news sources across 300 markets in real-time. Speed matters — prices move in seconds.
+- **What's novel:** Not just "an AI trading bot." It's infrastructure with deterministic execution, replayability, reconciliation, and a safety framework that gates every trade behind human approval.
+
+**Who speaks:** Akshat — "Let me zoom out. The system has one job: when news breaks, figure out which prediction markets are affected, how much the price should move, and whether it's worth trading — all within 5 seconds. But the real contribution isn't the trading — it's the infrastructure. Every signal is traceable with a unique ID through 8 stages. Every decision is replayable from the database. Every trade requires human approval. This is a safety-first design, not an autonomous bot."
+
+**Duration:** 45 seconds
 
 **Content:**
 - Prediction markets: binary contracts, real-time price discovery
