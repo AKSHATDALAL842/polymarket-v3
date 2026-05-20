@@ -335,17 +335,16 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 
 ## Slide 20: Future Work
 
-**Visual:** Timeline showing Phase 1 → Phase 2 → Phase 3 progression with deliverables at each stage.
+**Visual:** Three simple boxes in a row, each with an icon and one line of text. No complex diagrams.
 
 **Content:**
-- 24-hour continuous soak testing
-- Domain-fine-tuned embedding model (FinBERT variant)
-- Cross-exchange reconciliation (Polymarket ↔ Kalshi)
-- Formal FSM verification
-- Anomaly prediction from reconciliation history
-- Gradual exposure scaling (Phase 2: $5 → Phase 3: $25)
+- **Run Longer:** Let the system run for 24+ hours continuously to prove it stays stable
+- **Match Better:** Upgrade the AI that connects news to markets so it understands more topics
+- **Scale Slowly:** After proving stability, gradually increase trade sizes from $2 → $5 → $25
 
-**Who speaks:** Nikhil — "Looking forward, our immediate priority is extended operational validation..."
+**Who speaks:** Nikhil — "Future work is simple. First, run it longer to prove stability. Second, upgrade the matching model to understand more market topics. Third, scale trade sizes slowly — only after we have evidence it's safe. No rocket science, just disciplined validation."
+
+**Duration:** 20 seconds
 
 ---
 
@@ -457,7 +456,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 "Let me show you the live system. Terminal one runs the backend with all 10 background tasks — you can see the pipeline starting, markets loading, and all tasks initializing. Terminal two runs the dashboard dev server. The browser shows real-time signals flowing through the feed. The Risk Control Console shows live exposure data from the portfolio API. And you can see trade proposals appear when the system detects actionable signals."
 
 ### Slide 20 (Future Work) — 20 seconds
-"Looking forward, our immediate priority is extended operational validation — 24-hour continuous soak testing to verify no memory leaks or queue buildup. Beyond that, a domain-fine-tuned embedding model would improve matching precision, and formal FSM verification would provide mathematical guarantees of correctness."
+"Future work is simple. First, run it longer — 24-hour continuous testing to prove stability. Second, match better — upgrade the AI that connects news to markets. Third, scale slowly — increase trade sizes only after we have evidence it's safe. No rocket science, just disciplined validation."
 
 ### Slide 22 (References) — 15 seconds
 "Our work builds on established research in prediction markets, natural language processing, and reliability engineering. Key influences include Hanson and Wolfers on prediction market theory, Kelly on optimal betting fractions, and Kleppmann on distributed systems design."
