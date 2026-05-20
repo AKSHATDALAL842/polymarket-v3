@@ -335,14 +335,14 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 
 ## Slide 20: Future Work
 
-**Visual:** Three simple boxes in a row, each with an icon and one line of text. No complex diagrams.
+**Visual:** Three large numbered boxes arranged horizontally. Each has one short sentence in large font. Icons optional but keep it clean.
 
 **Content:**
-- **Run Longer:** Let the system run for 24+ hours continuously to prove it stays stable
-- **Match Better:** Upgrade the AI that connects news to markets so it understands more topics
-- **Scale Slowly:** After proving stability, gradually increase trade sizes from $2 → $5 → $25
+1. **Test it for 24 hours straight** — make sure nothing breaks over time
+2. **Improve news understanding** — help it recognize more types of news events
+3. **Slowly increase trade amounts** — start at $2, then $5, then $25 only if it's safe
 
-**Who speaks:** Nikhil — "Future work is simple. First, run it longer to prove stability. Second, upgrade the matching model to understand more market topics. Third, scale trade sizes slowly — only after we have evidence it's safe. No rocket science, just disciplined validation."
+**Who speaks:** Nikhil — "Three things we want to do next. One: run the system for a full day without stopping, to prove it doesn't crash or slow down. Two: teach it to understand more kinds of news — right now it's good at politics and crypto, we want it to handle more. Three: very slowly increase how much we trade, from 2 dollars to 5 to 25, and only after we've proven it's safe at each step."
 
 **Duration:** 20 seconds
 
@@ -456,7 +456,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 "Let me show you the live system. Terminal one runs the backend with all 10 background tasks — you can see the pipeline starting, markets loading, and all tasks initializing. Terminal two runs the dashboard dev server. The browser shows real-time signals flowing through the feed. The Risk Control Console shows live exposure data from the portfolio API. And you can see trade proposals appear when the system detects actionable signals."
 
 ### Slide 20 (Future Work) — 20 seconds
-"Future work is simple. First, run it longer — 24-hour continuous testing to prove stability. Second, match better — upgrade the AI that connects news to markets. Third, scale slowly — increase trade sizes only after we have evidence it's safe. No rocket science, just disciplined validation."
+"Three things we want to do next. One: run the system for a full day without stopping, to prove it doesn't crash or slow down over time. Two: teach it to understand more kinds of news — right now it's good at politics and crypto, we want it to cover more topics. Three: very slowly increase how much we trade, from 2 dollars to 5 dollars to 25 dollars, and only after we've proven it's safe at each level."
 
 ### Slide 22 (References) — 15 seconds
 "Our work builds on established research in prediction markets, natural language processing, and reliability engineering. Key influences include Hanson and Wolfers on prediction market theory, Kelly on optimal betting fractions, and Kleppmann on distributed systems design."
