@@ -36,20 +36,12 @@
 
 **Content:**
 - **What it does:** Reads breaking news → finds related prediction markets → classifies impact → simulates trades
-- **Why it matters:** Manual traders cannot monitor 7 news sources across 300 markets in real-time. Speed matters — prices move in seconds.
+- **Why it matters:** *"News comes before the market reacts."*  Breaking news hits the wire first — prices move seconds later. A system that reads news in real-time can act during that window, before the crowd catches up.
 - **What's novel:** Not just "an AI trading bot." It's infrastructure with deterministic execution, replayability, reconciliation, and a safety framework that gates every trade behind human approval.
 
-**Who speaks:** Akshat — "Let me zoom out. The system has one job: when news breaks, figure out which prediction markets are affected, how much the price should move, and whether it's worth trading — all within 5 seconds. But the real contribution isn't the trading — it's the infrastructure. Every signal is traceable with a unique ID through 8 stages. Every decision is replayable from the database. Every trade requires human approval. This is a safety-first design, not an autonomous bot."
+**Who speaks:** Akshat — "Here's the core idea: news comes before the market reacts. Breaking news hits the wire — a Fed announcement, an ETF approval — and for a few seconds, the market hasn't adjusted yet. That's the window. Our system reads 7 news sources in real-time, figures out which markets are affected, and makes a decision in under 5 seconds. But the real contribution isn't the trading speed — it's that every decision is traceable, replayable, and gated behind human approval. This is safety-first, not a gambling bot."
 
 **Duration:** 45 seconds
-
-**Content:**
-- Prediction markets: binary contracts, real-time price discovery
-- Breaking news moves prices in seconds
-- Manual traders cannot process 7 news sources × 300 markets in real-time
-- Existing automated systems: black boxes, no replayability, silent failures
-
-**Who speaks:** Akshat — "Prediction markets aggregate information through prices. When news breaks, prices move in seconds. A human trader cannot monitor 7 news sources across 300 markets simultaneously. But automated systems have a darker problem..."
 
 ---
 
