@@ -345,18 +345,17 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 
 ## Slide 21: Conclusion
 
-**Visual:** Single quote, large font, centered.
+**Visual:** Three simple boxes with the key takeaways. Clean, minimal.
 
 **Content:**
-> "In autonomous financial systems, operational reliability — deterministic FSMs, replayable observability, reconciliation, and staged deployment with human oversight — provides strictly more value than raw autonomy."
 
-- 22 development iterations
-- 228 tests, 0 failures
-- 9 failure modes discovered and remediated
-- Production-grade safety infrastructure
-- Operational in shadow mode — paper trades executing successfully
+**What we built:** A system that reads breaking news, finds the right prediction markets, and simulates trades — all in under 5 seconds.
 
-**Who speaks:** Akshat — "Our core finding is simple: operational reliability beats raw autonomy..."
+**How we built it:** With safety first. Every decision is traceable. Every trade needs human approval. The system checks itself before starting.
+
+**What we learned:** In financial systems, being correct matters more than being fast. Transparency matters more than automation. A human in the loop is not a weakness — it's the last line of defense.
+
+**Who speaks:** Akshat — "To wrap up: we built a system that reads news and trades prediction markets in under 5 seconds. But more importantly, we built it to be safe — every decision traceable, every trade human-approved, every failure explainable. The biggest lesson: correctness beats speed, and transparency beats automation. A human in the loop is not a bug — it's the feature."
 
 ---
 
@@ -429,7 +428,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 "Let me be upfront about what this system doesn't do yet. We've only tested with paper money — no real capital has been used. The news matching works well for politics and crypto but misses some sports and entertainment topics. We haven't run it for 24 hours straight to prove long-term stability. And we make zero claims about profitability — we built this to be correct and safe, not to make money."
 
 ### Slide 21 (Conclusion) — 30 seconds
-"Our core finding: in autonomous financial systems, operational reliability — deterministic FSMs, replayable observability, reconciliation, and staged deployment with human oversight — provides strictly more value than raw autonomy. The system is not an AI trading bot. It is a supervised, deterministic, replayable infrastructure system that happens to trade prediction markets."
+"To wrap up: we built a system that reads breaking news, finds the right prediction markets, and simulates trades — all in under 5 seconds. But more importantly, we built it to be safe. Every decision is traceable. Every trade needs human approval. Every failure is explainable. The biggest lesson we learned: correctness beats speed, and transparency beats automation. A human in the loop is not a weakness — it's the feature."
 
 ---
 
