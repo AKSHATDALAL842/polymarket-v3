@@ -53,17 +53,24 @@
 
 ---
 
-## Slide 3: The Core Problem — Silent Failures
+## Slide 3: Why Build Another One? — What Makes This Different
 
-**Visual:** A signal pipeline diagram where signals enter from the left and... disappear in the middle. Red X marks at each stage. A counter showing "136 events processed → 0 signals generated."
+**Visual:** A clean comparison table — 3 columns, rows with simple checkmarks/crosses. No dense text. Use green for our system's column.
 
 **Content:**
-- 136 news events processed per hour
-- Zero signals generated
-- Why? No observability. No one knew where signals died.
-- The system was a black box
 
-**Who speaks:** Akshat — "We discovered the hard way that autonomous systems don't fail loudly — they fail silently. 136 events processed per hour. Zero signals generated. And we had no idea why. This became our core problem..."
+| Feature | Typical Bots | Our System |
+|---------|-------------|------------|
+| End-to-end latency | 30-60 seconds | **Under 5 seconds** |
+| News sources | 1-2 | **7 concurrent sources** |
+| Market matching | Keyword only | **Semantic + Entity + Keyword hybrid** |
+| Explainability | Black box — no trace | **Every signal traceable with unique ID** |
+| Failure visibility | None — silent death | **19 rejection reasons, exact threshold vs actual** |
+| Safety gates | None or basic stop-loss | **Manual approval + 8 circuit breakers + hard-stop** |
+| Replay/recovery | Impossible | **Full lifecycle reconstruction from database** |
+| Live capital risk | Autonomous — full exposure | **$2 max, human sign-off required** |
+
+**Who speaks:** Akshat — "There are prediction market bots already. Most have 30 to 60 seconds of latency, match markets using keywords only, and operate as black boxes — when they silently fail, nobody knows why. Our system does it in under 5 seconds from news to decision, combines three matching techniques instead of one, and most importantly — every single decision is traceable, explainable, and gated behind human approval. That's the difference."
 
 ---
 
