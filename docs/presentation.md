@@ -149,7 +149,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 - Manual approval workflow: propose → review → approve → execute
 - Proposal expiry: 5-minute timeout, stale proposals require re-validation
 - Emergency hard-stop: one command freezes all execution
-- Live constraints: $2 max bet, 1 position, $5 daily loss cap (Phase 1)
+- Live constraints: $2 max bet, 1 position, $5 daily loss cap
 
 **Who speaks:** Nikhil — "Safety isn't just a backend concern. The Risk Control Console provides live visibility into every safety mechanism. The Kill Switch button..."
 
@@ -313,19 +313,18 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 
 ---
 
-## Slide 19: Limitations (Honest)
+## Slide 19: Limitations
 
 **Visual:** Simple list, no graphics. Professional, transparent.
 
 **Content:**
-- Limited live-capital validation (Phase 1 shadow/paper only)
-- Constrained exposure ($2 max bet, $5 daily loss)
-- Embedding model not domain-fine-tuned
-- No 24-hour continuous soak test completed
-- No profitability claims — validated for correctness, not returns
-- Dependent on exchange API stability
+- Trading is paper-only right now — no real money has been used yet
+- The AI that matches news to markets still misses some topics (sports, entertainment)
+- Hasn't been tested for 24 hours straight — long-term stability not yet proven
+- No profitability claims — we built this for correctness, not returns
+- Depends on external APIs — if Polymarket or Groq go down, the system pauses
 
-**Who speaks:** Akshat — "We are honest about our limitations. We have not yet completed 24-hour continuous soak testing..."
+**Who speaks:** Akshat — "Let me be upfront about what this system doesn't do yet. We've only tested with paper money — no real capital. The news matching works great for politics and crypto but misses some sports and entertainment topics. We haven't run it for 24 hours straight to prove long-term stability. And we make zero claims about making money — we built this to be correct and safe, not profitable."
 
 ---
 
@@ -355,7 +354,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 - 228 tests, 0 failures
 - 9 failure modes discovered and remediated
 - Production-grade safety infrastructure
-- Ready for constrained live-capital validation
+- Operational in shadow mode — paper trades executing successfully
 
 **Who speaks:** Akshat — "Our core finding is simple: operational reliability beats raw autonomy..."
 
@@ -427,7 +426,7 @@ Position Size = K × EV × confidence × bankroll, drawdown-scaled
 "Six lessons. First: observability must come before optimization. Second: live shadow operation discovers failures that offline testing cannot. Third: deterministic FSMs catch bugs at development time, not in production. Fourth: exchange-authoritative reconciliation is non-negotiable. Fifth: rule-based fallbacks sustain operations when ML APIs fail — we generated 6 trades during a complete Groq outage. Sixth: manual approval gating prevents autonomous errors from becoming financial losses."
 
 ### Slide 19 (Limitations) — 20 seconds
-"We are honest about our limitations. Limited live-capital validation so far. Constrained exposure by design. No 24-hour soak test completed. No profitability claims — we validate for correctness, not returns."
+"Let me be upfront about what this system doesn't do yet. We've only tested with paper money — no real capital has been used. The news matching works well for politics and crypto but misses some sports and entertainment topics. We haven't run it for 24 hours straight to prove long-term stability. And we make zero claims about profitability — we built this to be correct and safe, not to make money."
 
 ### Slide 21 (Conclusion) — 30 seconds
 "Our core finding: in autonomous financial systems, operational reliability — deterministic FSMs, replayable observability, reconciliation, and staged deployment with human oversight — provides strictly more value than raw autonomy. The system is not an AI trading bot. It is a supervised, deterministic, replayable infrastructure system that happens to trade prediction markets."
