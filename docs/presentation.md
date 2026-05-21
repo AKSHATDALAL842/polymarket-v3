@@ -53,24 +53,21 @@
 
 ---
 
-## Slide 3: Why Build Another One? — What Makes This Different
+## Slide 3: Why Automate This? — Human vs Machine
 
-**Visual:** A clean comparison table — 3 columns, rows with simple checkmarks/crosses. No dense text. Use green for our system's column.
+**Visual:** Two columns side by side. Left: "Human Trader" with red/dim styling. Right: "Our System" with green/bright styling. Three rows of comparison, simple icons, large font.
 
 **Content:**
 
-| Feature | Typical Bots | Our System |
-|---------|-------------|------------|
-| End-to-end latency | 30-60 seconds | **Under 5 seconds** |
-| News sources | 1-2 | **7 concurrent sources** |
-| Market matching | Keyword only | **Semantic + Entity + Keyword hybrid** |
-| Explainability | Black box — no trace | **Every signal traceable with unique ID** |
-| Failure visibility | None — silent death | **19 rejection reasons, exact threshold vs actual** |
-| Safety gates | None or basic stop-loss | **Manual approval + 8 circuit breakers + hard-stop** |
-| Replay/recovery | Impossible | **Full lifecycle reconstruction from database** |
-| Live capital risk | Autonomous — full exposure | **$2 max, human sign-off required** |
+| | Human Trader | Our System |
+|---|-------------|------------|
+| **Speed** | Minutes to hours to find and react to news | Under 5 seconds from news to decision |
+| **Scale** | Can monitor maybe 5-10 markets at once | Tracks all 27 markets across 2 exchanges simultaneously |
+| **Cost** | Full-time trader salary or expensive managed service | Runs on free APIs, $0 operational cost |
 
-**Who speaks:** Akshat — "There are prediction market bots already. Most have 30 to 60 seconds of latency, match markets using keywords only, and operate as black boxes — when they silently fail, nobody knows why. Our system does it in under 5 seconds from news to decision, combines three matching techniques instead of one, and most importantly — every single decision is traceable, explainable, and gated behind human approval. That's the difference."
+**Existing AI bots:** Most are either expensive managed services charging monthly fees, too slow to react to breaking news, or don't process news at all — they only look at price charts.
+
+**Who speaks:** Akshat — "A human trader takes minutes, maybe hours, to find breaking news, figure out which markets are affected, and place a trade. By then, the price has already moved. And they can realistically track maybe 5 to 10 markets at once. Existing AI bots are either expensive, slow, or don't react to news at all — most just look at price charts. Our system reads 7 news sources in real-time, matches headlines to 27 markets across two exchanges, and makes a decision in under 5 seconds. And it costs nothing to run — it's built entirely on free APIs."
 
 ---
 
